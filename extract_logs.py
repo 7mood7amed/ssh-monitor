@@ -12,6 +12,7 @@ DB_HOST = "localhost"
 
 # === Directory to scan ===
 LOG_DIR = "/var/log"
+AGENT_NAME = "raven"   # <-- Identify this VM as "raven"
 
 def connect_db():
     """Establish connection to PostgreSQL database."""
@@ -25,7 +26,7 @@ def connect_db():
 def ensure_tables_exist(conn):
     """Create tables for logs and heartbeat if they don't exist."""
     with conn.cursor() as cur:
-        # Logs table
+        # Logs table (now includes agent_name with FK)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS logs (
                 id SERIAL PRIMARY KEY,
@@ -33,9 +34,11 @@ def ensure_tables_exist(conn):
                 log_time TIMESTAMP,
                 source TEXT,
                 message TEXT,
-                hash TEXT UNIQUE
+                hash TEXT UNIQUE,
+                agent_name TEXT REFERENCES agent_status(agent_name) ON DELETE CASCADE
             );
         """)
+
         # Heartbeat table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS agent_status (
@@ -93,11 +96,12 @@ def extract_logs():
                         log_time, message = parse_log_line(line)
                         log_hash = compute_hash(filename, message)
 
+                        # --- Insert log entry with agent_name (foreign key) ---
                         cur.execute("""
-                            INSERT INTO logs (filename, log_time, source, message, hash)
-                            VALUES (%s, %s, %s, %s, %s)
+                            INSERT INTO logs (filename, log_time, source, message, hash, agent_name)
+                            VALUES (%s, %s, %s, %s, %s, %s)
                             ON CONFLICT (hash) DO NOTHING;
-                        """, (filename, log_time, file_path, message, log_hash))
+                        """, (filename, log_time, file_path, message, log_hash, AGENT_NAME))
 
                 conn.commit()
 
@@ -118,10 +122,10 @@ def update_heartbeat():
                 VALUES (%s, NOW(), 'active')
                 ON CONFLICT (agent_name)
                 DO UPDATE SET last_heartbeat = NOW(), status = 'active';
-            """, ('raven',))
+            """, (AGENT_NAME,))
             conn.commit()
         conn.close()
-        print("💓 Heartbeat updated for agent 'raven'")
+        print(f"💓 Heartbeat updated for agent '{AGENT_NAME}'")
     except Exception as e:
         print(f"⚠️ Heartbeat update failed: {e}")
 
