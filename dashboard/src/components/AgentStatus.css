@@ -1,0 +1,45 @@
+.agent-status-container {
+  background: white;
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 30px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.agent-status-container h2 {
+  color: #004643;
+  margin-bottom: 15px;
+  text-align: center;
+}
+
+.agent-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: center;
+}
+
+.agent-table th {
+  background-color: #004643;
+  color: white;
+  padding: 10px;
+}
+
+.agent-table td {
+  padding: 8px;
+  border-bottom: 1px solid #ddd;
+}
+
+.status-badge {
+  padding: 5px 10px;
+  border-radius: 6px;
+  color: white;
+  font-weight: bold;
+}
+
+.status-badge.active {
+  background-color: #2ecc71; /* green */
+}
+
+.status-badge.inactive {
+  background-color: #e74c3c; /* red */
+}

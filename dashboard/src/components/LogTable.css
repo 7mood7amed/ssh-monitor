@@ -1,0 +1,55 @@
+.log-table-container {
+    background: white;
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    margin-bottom: 40px;
+}
+
+.log-table-container h2 {
+    color: #004643;
+    margin-bottom: 15px;
+    text-align: center;
+}
+
+.log-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+}
+
+.log-table th {
+    background-color: #004643;
+    color: white;
+    padding: 10px;
+}
+
+.log-table td {
+    padding: 8px;
+    border-bottom: 1px solid #ddd;
+}
+
+.log-message {
+    text-align: left;
+    word-break: break-word;
+    max-width: 400px;
+}
+
+.severity-badge {
+    padding: 5px 10px;
+    border-radius: 6px;
+    color: white;
+    font-weight: bold;
+}
+
+.severity-badge.low {
+    background-color: #2ecc71;
+}
+
+.severity-badge.medium {
+    background-color: #f39c12;
+}
+
+.severity-badge.high {
+    background-color: #e74c3c;
+}

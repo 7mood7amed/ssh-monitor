@@ -1,0 +1,18 @@
+.dashboard-header {
+  background-color: #004643;
+  color: white;
+  padding: 20px;
+  text-align: center;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.dashboard-header h1 {
+  margin: 0;
+  font-size: 1.8rem;
+}
+
+.subtitle {
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
