@@ -1,21 +1,37 @@
-import React from "react";
-import "./App.css";
+import React, { useEffect, useState } from "react";
 import Header from "./components/Header";
 import Metrics from "./components/Metrics";
 import AgentStatus from "./components/AgentStatus";
-import LogTable from "./components/LogTable";
 import ChartPanel from "./components/ChartPanel";
-
+import LogsTable from "./components/LogsTable";
+import Footer from "./components/Footer";
+import "./App.css";
 
 function App() {
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [lastUpdated, setLastUpdated] = useState(new Date().toLocaleTimeString());
+  const REFRESH_INTERVAL = 30000; // 30 seconds
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRefreshTrigger((prev) => prev + 1);
+      setLastUpdated(new Date().toLocaleTimeString());
+      console.log("🔄 Dashboard refreshed at", new Date().toLocaleTimeString());
+    }, REFRESH_INTERVAL);
+
+    return () => clearInterval(interval);
+  }, []);
+
   return (
-    <div className="app-container">
-      <Header />
-      <Metrics />
-      {/* We’ll add AgentStatus, LogTable, and ChartPanel next */}
-      <AgentStatus />
-      <LogTable />
-      <ChartPanel />
+    <div className="app">
+      <Header lastUpdated={lastUpdated} />
+      <main>
+        <Metrics refreshTrigger={refreshTrigger} />
+        <ChartPanel refreshTrigger={refreshTrigger} />
+        <AgentStatus refreshTrigger={refreshTrigger} />
+        <LogsTable refreshTrigger={refreshTrigger} />
+      </main>
+      <Footer />
     </div>
   );
 }

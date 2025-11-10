@@ -1,26 +1,20 @@
-.chart-panel {
-  background: white;
-  border-radius: 10px;
-  padding: 20px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-  margin-bottom: 40px;
+.chart-section {
+  margin: 2rem auto;
+  width: 95%;
 }
 
-.chart-panel h2 {
-  color: #004643;
-  margin-bottom: 20px;
-  text-align: center;
-}
-
-.charts-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-  gap: 30px;
+.chart-section h2 {
+  font-size: 1.2rem;
+  color: #003366;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .chart-card {
-  background: #f9f9f9;
-  border-radius: 10px;
+  background: #ffffff;
+  border-radius: 12px;
   padding: 20px;
-  text-align: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
