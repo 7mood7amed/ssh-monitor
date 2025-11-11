@@ -13,7 +13,11 @@ DB_CONFIG = {
     "dbname": "logdb",
     "user": "hero",
     "password": "hero",
+<<<<<<< HEAD
     "host": "localhost",   # change if your DB host differs
+=======
+    "host": "192.168.56.3",   # change if your DB host differs
+>>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
     "port": 5432
 }
 
@@ -160,6 +164,7 @@ def get_chart_data():
         print(f"Error fetching chart data: {e}")
         return jsonify({"error": str(e)}), 500
 
+<<<<<<< HEAD
 # # === ROUTE 5: Detect Flask server IP ===
 # @app.route("/api/hostinfo", methods=["GET"])
 # def get_host_info():
@@ -170,6 +175,8 @@ def get_chart_data():
 #     except Exception as e:
 #         return jsonify({"error": str(e)}), 500
 
+=======
+>>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
 
 @app.route("/", methods=["GET"])
 def home():
