@@ -1,24 +1,47 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
+import getApiBaseUrl from "../config";
 import "./Metrics.css";
 
-function Metrics() {
-    const metrics = [
-        { label: "Total Logs", value: "10,248" },
-        { label: "Active Agents", value: "3" },
-        { label: "Last Sync", value: "Just now" },
-        { label: "Detected Anomalies", value: "12" },
-    ];
+const Metrics = ({ refreshTrigger }) => {
+  const [metrics, setMetrics] = useState({
+    totalLogs: 0,
+    activeAgents: 0,
+    anomalies: 0,
+  });
 
-    return (
-        <div className="metrics-container">
-            {metrics.map((metric, index) => (
-                <div key={index} className="metric-card">
-                    <h3>{metric.label}</h3>
-                    <p>{metric.value}</p>
-                </div>
-            ))}
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const res = await fetch("http://192.168.1.55:5000/api/metrics");
+        const data = await res.json();
+        setMetrics(data);
+      } catch (error) {
+        console.error("Error fetching metrics:", error);
+      }
+    };
+
+    fetchMetrics();
+  }, [refreshTrigger]);
+
+  const metricData = [
+    { title: "Total Logs", value: metrics.totalLogs, icon: "📘", color: "#0066cc" },
+    { title: "Active Agents", value: metrics.activeAgents, icon: "🧩", color: "#28a745" },
+    { title: "Anomalies Detected", value: metrics.anomalies, icon: "⚠️", color: "#dc3545" },
+  ];
+
+  return (
+    <section className="metrics-container">
+      {metricData.map((item, index) => (
+        <div className="metric-card" key={index} style={{ borderTopColor: item.color }}>
+          <div className="metric-icon">{item.icon}</div>
+          <div className="metric-info">
+            <h3>{item.value}</h3>
+            <p>{item.title}</p>
+          </div>
         </div>
-    );
-}
+      ))}
+    </section>
+  );
+};
 
 export default Metrics;

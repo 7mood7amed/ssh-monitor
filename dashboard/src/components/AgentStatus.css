@@ -1,45 +1,57 @@
 .agent-status-container {
-  background: white;
-  border-radius: 10px;
-  padding: 20px;
-  margin-bottom: 30px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 20px 25px;
+  margin: 30px auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  width: 90%;
+  transition: all 0.3s ease;
 }
 
 .agent-status-container h2 {
-  color: #004643;
+  color: #003366;
+  text-align: left;
   margin-bottom: 15px;
-  text-align: center;
+  font-size: 1.2rem;
+  border-bottom: 2px solid #e5e9f0;
+  padding-bottom: 8px;
 }
 
 .agent-table {
   width: 100%;
   border-collapse: collapse;
-  text-align: center;
+  text-align: left;
 }
 
 .agent-table th {
-  background-color: #004643;
+  background-color: #004c7f;
   color: white;
-  padding: 10px;
+  padding: 10px 12px;
+  text-align: left;
 }
 
 .agent-table td {
-  padding: 8px;
-  border-bottom: 1px solid #ddd;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e9f0;
+  font-size: 0.95rem;
 }
 
 .status-badge {
   padding: 5px 10px;
   border-radius: 6px;
-  color: white;
   font-weight: bold;
+  color: white;
+  text-transform: capitalize;
 }
 
 .status-badge.active {
-  background-color: #2ecc71; /* green */
+  background-color: #2ecc71;
 }
 
-.status-badge.inactive {
-  background-color: #e74c3c; /* red */
+.status-badge.idle {
+  background-color: #f39c12;
+}
+
+.status-badge.offline {
+  background-color: #e74c3c;
 }

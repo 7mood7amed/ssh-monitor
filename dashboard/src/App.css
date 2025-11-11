@@ -1,38 +1,103 @@
-.App {
-  text-align: center;
+body {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #f4f6f8;
+  margin: 0;
+  color: #222;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
-}
-
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
+.header {
+  background-color: #0a3d62;
   color: white;
+  text-align: center;
+  padding: 20px 0;
 }
 
-.App-link {
-  color: #61dafb;
+.timestamp {
+  font-size: 14px;
+  color: #cde4ff;
+  margin-top: 5px;
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
+.metrics {
+  display: flex;
+  justify-content: space-around;
+  padding: 20px;
+}
+
+.metric-card {
+  background-color: white;
+  border-radius: 10px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  text-align: center;
+  padding: 20px;
+  width: 200px;
+}
+
+.logs-table {
+  background: white;
+  margin: 20px;
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.logs-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.logs-table th,
+.logs-table td {
+  border-bottom: 1px solid #ddd;
+  padding: 10px;
+  text-align: left;
+}
+
+.logs-table th {
+  background-color: #f8f9fa;
+}
+
+.footer {
+  text-align: center;
+  padding: 15px;
+  background: #0a3d62;
+  color: white;
+  position: relative;
+  bottom: 0;
+  width: 100%;
+}
+
+/* 🔴 Flash effect for high severity logs */
+@keyframes flashRed {
+  0% {
+    background-color: #ffe5e5;
   }
-  to {
-    transform: rotate(360deg);
+
+  50% {
+    background-color: #ffcccc;
   }
+
+  100% {
+    background-color: transparent;
+  }
+}
+
+.flash-alert {
+  animation: flashRed 2.5s ease-in-out;
+}
+
+/* Optional: make severity colors more readable */
+.severity-low {
+  color: green;
+  font-weight: 600;
+}
+
+.severity-high {
+  color: red;
+  font-weight: 700;
+}
+
+.severity-medium {
+  color: orange;
+  font-weight: 600;
 }
