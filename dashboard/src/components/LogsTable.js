@@ -1,8 +1,5 @@
 import React, { useEffect, useState } from "react";
-<<<<<<< HEAD
 // import getApiBaseUrl from "../config";
-=======
->>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
 import "./LogsTable.css";
 
 const LogsTable = () => {
@@ -18,11 +15,7 @@ const LogsTable = () => {
   useEffect(() => {
     const fetchLogs = async () => {
       try {
-<<<<<<< HEAD
         const res = await fetch("http://192.168.1.55:5000/api/logs");
-=======
-        const res = await fetch("http://192.168.1.13:5000/api/logs");
->>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
         const data = await res.json();
         setLogs(data);
         setFilteredLogs(data);

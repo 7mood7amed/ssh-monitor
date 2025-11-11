@@ -9,11 +9,7 @@ const ChartPanel = ({ refreshTrigger }) => {
   useEffect(() => {
     const fetchChartData = async () => {
       try {
-<<<<<<< HEAD
         const res = await fetch("http://192.168.1.55:5000/api/chart");
-=======
-        const res = await fetch("http://192.168.1.13:5000/api/chart");
->>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
         const data = await res.json();
         setChartData(data);
       } catch (error) {

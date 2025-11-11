@@ -1,8 +1,5 @@
 import React, { useEffect, useState } from "react";
-<<<<<<< HEAD
 import getApiBaseUrl from "../config";
-=======
->>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
 import "./Metrics.css";
 
 const Metrics = ({ refreshTrigger }) => {
@@ -15,11 +12,7 @@ const Metrics = ({ refreshTrigger }) => {
   useEffect(() => {
     const fetchMetrics = async () => {
       try {
-<<<<<<< HEAD
         const res = await fetch("http://192.168.1.55:5000/api/metrics");
-=======
-        const res = await fetch("http://192.168.1.13:5000/api/metrics");
->>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
         const data = await res.json();
         setMetrics(data);
       } catch (error) {
