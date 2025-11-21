@@ -1,15 +1,7 @@
-// const getApiBaseUrl = async () => {
-//     try {
-//         // Try to fetch the backend’s self-reported IP
-//         const res = await fetch("http://localhost:5000/api/hostinfo", { mode: "cors" });
-//         const data = await res.json();
+// 👇 Put your Raven VM IP here.
+// Right now from `ip a` it was something like 192.168.1.55
+// If it changes, just update this ONE line.
 
-//         // Use the backend IP if available, otherwise fall back to localhost
-//         if (data.ip) return `http://${data.ip}:5000`;
-//     } catch (err) {
-//         console.warn("Auto IP detection failed, using localhost");
-//     }
-//     return "http://localhost:5000";
-// };
+const API_BASE_URL = "http://192.168.1.55:5000";
 
-// export default getApiBaseUrl;
+export default API_BASE_URL;

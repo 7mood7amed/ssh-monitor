@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-// import getApiBaseUrl from "../config";
+import API_BASE_URL from "../config";
 import "./LogsTable.css";
 
 const LogsTable = () => {
@@ -15,7 +15,7 @@ const LogsTable = () => {
   useEffect(() => {
     const fetchLogs = async () => {
       try {
-        const res = await fetch("http://192.168.1.55:5000/api/logs");
+        const res = await fetch(`${API_BASE_URL}/api/logs`);
         const data = await res.json();
         setLogs(data);
         setFilteredLogs(data);

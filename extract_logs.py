@@ -8,11 +8,15 @@ from datetime import datetime
 DB_NAME = "logdb"
 DB_USER = "hero"
 DB_PASS = "hero"
-DB_HOST = "localhost"
+DB_HOST = "localhost"  # stays localhost because script runs inside Raven VM
+DB_PORT = 5432
 
 # === Directory to scan ===
 LOG_DIR = "/var/log"
-AGENT_NAME = "raven"   # <-- Identify this VM as "raven"
+
+# === Maximum number of logs to keep ===
+LOG_LIMIT = 20000
+
 
 def connect_db():
     """Establish connection to PostgreSQL database."""
@@ -20,13 +24,14 @@ def connect_db():
         dbname=DB_NAME,
         user=DB_USER,
         password=DB_PASS,
-        host=DB_HOST
+        host=DB_HOST,
+        port=DB_PORT
     )
+
 
 def ensure_tables_exist(conn):
     """Create tables for logs and heartbeat if they don't exist."""
     with conn.cursor() as cur:
-        # Logs table (now includes agent_name with FK)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS logs (
                 id SERIAL PRIMARY KEY,
@@ -34,12 +39,10 @@ def ensure_tables_exist(conn):
                 log_time TIMESTAMP,
                 source TEXT,
                 message TEXT,
-                hash TEXT UNIQUE,
-                agent_name TEXT REFERENCES agent_status(agent_name) ON DELETE CASCADE
+                agent_name TEXT,
+                hash TEXT UNIQUE
             );
         """)
-
-        # Heartbeat table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS agent_status (
                 agent_name TEXT PRIMARY KEY,
@@ -49,8 +52,31 @@ def ensure_tables_exist(conn):
         """)
         conn.commit()
 
+
+def trim_old_logs(conn):
+    """Delete oldest logs if count exceeds LOG_LIMIT."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM logs;")
+        total = cur.fetchone()[0]
+
+        if total > LOG_LIMIT:
+            excess = total - LOG_LIMIT
+            print(f"🧹 Trimming {excess} old logs...")
+
+            cur.execute("""
+                DELETE FROM logs
+                WHERE id IN (
+                    SELECT id FROM logs ORDER BY log_time ASC LIMIT %s
+                );
+            """, (excess,))
+            conn.commit()
+            print("🧹 Cleanup complete.")
+        else:
+            print("✅ No cleanup needed; log count within limit.")
+
+
 def parse_log_line(line):
-    """Try to extract timestamp from a log line."""
+    """Extract timestamp and raw message."""
     parts = line.strip().split()
     if len(parts) >= 3:
         timestamp_str = " ".join(parts[:3])
@@ -61,15 +87,18 @@ def parse_log_line(line):
             log_time = datetime.now()
     else:
         log_time = datetime.now()
+
     return log_time, line.strip()
 
+
 def compute_hash(filename, message):
-    """Generate a unique hash for each log entry."""
+    """Generate SHA256 hash for the log entry."""
     raw = f"{filename}-{message}".encode("utf-8", errors="ignore")
     return hashlib.sha256(raw).hexdigest()
 
+
 def extract_logs():
-    """Extract logs recursively and insert into the database."""
+    """Scan log directory and insert unique log entries."""
     conn = connect_db()
     ensure_tables_exist(conn)
     cur = conn.cursor()
@@ -78,39 +107,44 @@ def extract_logs():
         for filename in files:
             file_path = os.path.join(root, filename)
 
-            # Skip compressed or rotated logs
             if file_path.endswith((".gz", ".xz", ".1", ".2", ".old")):
-                print(f"⏭️ Skipping compressed file: {file_path}")
-                continue
-
-            # Only consider valid log files
-            if not file_path.endswith(".log") and not file_path.startswith("/var/log/"):
                 continue
 
             try:
-                print(f"📄 Processing: {file_path}")
                 with open(file_path, "r", errors="ignore") as f:
                     for line in f:
                         if not line.strip():
                             continue
+
                         log_time, message = parse_log_line(line)
                         log_hash = compute_hash(filename, message)
 
-                        # --- Insert log entry with agent_name (foreign key) ---
                         cur.execute("""
-                            INSERT INTO logs (filename, log_time, source, message, hash, agent_name)
+                            INSERT INTO logs (filename, log_time, source, message, agent_name, hash)
                             VALUES (%s, %s, %s, %s, %s, %s)
                             ON CONFLICT (hash) DO NOTHING;
-                        """, (filename, log_time, file_path, message, log_hash, AGENT_NAME))
+                        """, (
+                            filename,
+                            log_time,
+                            file_path,
+                            message,
+                            "raven",
+                            log_hash
+                        ))
 
                 conn.commit()
 
             except Exception as e:
-                print(f"⚠️ Error reading {file_path}: {e}")
+                print(f"⚠ Error reading {file_path}: {e}")
 
     cur.close()
+
+    # 🔥 Clean up old logs AFTER inserting new ones
+    trim_old_logs(conn)
+
     conn.close()
     print("✅ Log import completed (duplicates skipped).")
+
 
 def update_heartbeat():
     """Update or insert heartbeat info for this agent."""
@@ -122,12 +156,13 @@ def update_heartbeat():
                 VALUES (%s, NOW(), 'active')
                 ON CONFLICT (agent_name)
                 DO UPDATE SET last_heartbeat = NOW(), status = 'active';
-            """, (AGENT_NAME,))
+            """, ("raven",))
             conn.commit()
         conn.close()
-        print(f"💓 Heartbeat updated for agent '{AGENT_NAME}'")
+        print("💓 Heartbeat updated.")
     except Exception as e:
-        print(f"⚠️ Heartbeat update failed: {e}")
+        print(f"⚠ Heartbeat update failed: {e}")
+
 
 if __name__ == "__main__":
     extract_logs()

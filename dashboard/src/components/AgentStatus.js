@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 // import getApiBaseUrl from "../config";
 import "./AgentStatus.css";
+import API_BASE_URL from "../config";
 
 const AgentStatus = () => {
   const [agents, setAgents] = useState([]);
@@ -8,7 +9,7 @@ const AgentStatus = () => {
   useEffect(() => {
     const fetchAgents = async () => {
       try {
-        const res = await fetch("http://192.168.1.55:5000/api/agents");
+        const res = await fetch(`${API_BASE_URL}/api/agents`);
         const data = await res.json();
         setAgents(data);
       } catch (error) {

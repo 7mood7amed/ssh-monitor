@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import "./ChartPanel.css";
-import getApiBaseUrl from "../config";
+import API_BASE_URL from "../config";
 
 const ChartPanel = ({ refreshTrigger }) => {
   const [chartData, setChartData] = useState([]);
@@ -9,7 +9,7 @@ const ChartPanel = ({ refreshTrigger }) => {
   useEffect(() => {
     const fetchChartData = async () => {
       try {
-        const res = await fetch("http://192.168.1.55:5000/api/chart");
+        const res = await fetch(`${API_BASE_URL}/api/chart`);
         const data = await res.json();
         setChartData(data);
       } catch (error) {

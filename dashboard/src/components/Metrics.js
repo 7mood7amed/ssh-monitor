@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import getApiBaseUrl from "../config";
+import API_BASE_URL from "../config";
 import "./Metrics.css";
 
 const Metrics = ({ refreshTrigger }) => {
@@ -12,7 +12,7 @@ const Metrics = ({ refreshTrigger }) => {
   useEffect(() => {
     const fetchMetrics = async () => {
       try {
-        const res = await fetch("http://192.168.1.55:5000/api/metrics");
+        const res = await fetch(`${API_BASE_URL}/api/metrics`);
         const data = await res.json();
         setMetrics(data);
       } catch (error) {
