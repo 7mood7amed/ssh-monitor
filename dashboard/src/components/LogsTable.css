@@ -53,6 +53,30 @@
   background-color: #003355;
 }
 
+.export-btn {
+  background-color: #004c7f;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.export-btn:hover {
+  background-color: #0a2a47;
+  /* darker navy on hover */
+}
+
+.export-btn:active {
+  transform: scale(0.97);
+}
+
+
 .result-count {
   font-size: 0.85rem;
   color: #555;
