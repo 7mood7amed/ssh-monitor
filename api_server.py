@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-from flask import Flask, jsonify
+from flask import Flask, jsonify, Response
 from flask_cors import CORS
 import psycopg2
-import json
+import csv
+import io
 
 # === Flask App ===
 app = Flask(__name__)
@@ -13,21 +14,18 @@ DB_CONFIG = {
     "dbname": "logdb",
     "user": "hero",
     "password": "hero",
-<<<<<<< HEAD
-    "host": "localhost",   # change if your DB host differs
-=======
-    "host": "192.168.56.3",   # change if your DB host differs
->>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
+    "host": "localhost",      # correct for Raven VM
     "port": 5432
 }
-
 
 def get_db_connection():
     """Create and return a PostgreSQL connection."""
     return psycopg2.connect(**DB_CONFIG)
 
 
-# === ROUTE 1: Fetch latest 10 logs ===
+# ----------------------------------------------------
+#  ROUTE 1: Recent logs (latest 10)
+# ----------------------------------------------------
 @app.route("/api/logs", methods=["GET"])
 def get_logs():
     try:
@@ -62,12 +60,16 @@ def get_logs():
             }
             for r in rows
         ]
+
         return jsonify(logs)
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# === ROUTE 2: Fetch all agent statuses ===
+# ----------------------------------------------------
+#  ROUTE 2: Agent heartbeats
+# ----------------------------------------------------
 @app.route("/api/agents", methods=["GET"])
 def get_agents():
     try:
@@ -90,26 +92,28 @@ def get_agents():
             }
             for r in rows
         ]
+
         return jsonify(agents)
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === ROUTE 3: Dashboard metrics ===
+
+# ----------------------------------------------------
+#  ROUTE 3: Dashboard Metrics
+# ----------------------------------------------------
 @app.route("/api/metrics", methods=["GET"])
 def get_metrics():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # 1️⃣ Total logs count
         cur.execute("SELECT COUNT(*) FROM logs;")
         total_logs = cur.fetchone()[0]
 
-        # 2️⃣ Active agents
         cur.execute("SELECT COUNT(*) FROM agent_status WHERE LOWER(status) = 'active';")
         active_agents = cur.fetchone()[0]
 
-        # 3️⃣ Anomalies (High severity logs)
         cur.execute("""
             SELECT COUNT(*)
             FROM logs
@@ -129,17 +133,18 @@ def get_metrics():
         })
 
     except Exception as e:
-        print(f"Error fetching metrics: {e}")
         return jsonify({"error": str(e)}), 500
 
-# === ROUTE 4: Log volume over time ===
+
+# ----------------------------------------------------
+#  ROUTE 4: Chart Data
+# ----------------------------------------------------
 @app.route("/api/chart", methods=["GET"])
 def get_chart_data():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Group by hour (or minute if you prefer finer granularity)
         cur.execute("""
             SELECT 
                 DATE_TRUNC('hour', log_time) AS hour,
@@ -149,11 +154,11 @@ def get_chart_data():
             ORDER BY hour DESC
             LIMIT 24;
         """)
+
         rows = cur.fetchall()
         cur.close()
         conn.close()
 
-        # Convert PostgreSQL datetime to readable format
         data = [
             {"time": r[0].strftime("%H:%M"), "logs": r[1]}
             for r in reversed(rows)
@@ -161,26 +166,72 @@ def get_chart_data():
         return jsonify(data)
 
     except Exception as e:
-        print(f"Error fetching chart data: {e}")
         return jsonify({"error": str(e)}), 500
 
-<<<<<<< HEAD
-# # === ROUTE 5: Detect Flask server IP ===
-# @app.route("/api/hostinfo", methods=["GET"])
-# def get_host_info():
-#     try:
-#         hostname = socket.gethostname()
-#         ip_addr = socket.gethostbyname(hostname)
-#         return jsonify({"ip": ip_addr, "hostname": hostname})
-#     except Exception as e:
-#         return jsonify({"error": str(e)}), 500
 
-=======
->>>>>>> 194bfd6edf34649557b1bda3cbdd1ca563c3d9c8
+# ----------------------------------------------------
+#  ROUTE 5: Export Logs as CSV
+# ----------------------------------------------------
+# === ROUTE 5: Export logs as CSV ===
+@app.route("/api/export", methods=["GET"])
+def export_logs():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
 
+        cur.execute("""
+            SELECT log_time, agent_name, source, message
+            FROM logs
+            ORDER BY log_time DESC;
+        """)
+
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        # Build CSV content
+        csv_data = "timestamp,agent,source,message\n"
+        for r in rows:
+            timestamp = str(r[0]).replace(",", " ")
+            agent = r[1] if r[1] else "unknown"
+            source = r[2].replace(",", " ")
+            message = r[3].replace(",", " ")
+            csv_data += f"{timestamp},{agent},{source},{message}\n"
+
+        # Return CSV file as download
+        return (
+            csv_data,
+            200,
+            {
+                "Content-Type": "text/csv",
+                "Content-Disposition": "attachment; filename=logs_export.csv"
+            }
+        )
+
+    except Exception as e:
+        print("Export error:", e)
+        return jsonify({"error": str(e)}), 500
+
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ----------------------------------------------------
+#  Root Route
+# ----------------------------------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"message": "Raven API is running", "endpoints": ["/api/logs", "/api/agents"]})
+    return jsonify({
+        "message": "Raven API is running",
+        "endpoints": [
+            "/api/logs",
+            "/api/agents",
+            "/api/metrics",
+            "/api/chart",
+            "/api/export"
+        ]
+    })
 
 
 if __name__ == "__main__":

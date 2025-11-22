@@ -12,6 +12,7 @@ const LogsTable = () => {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
 
+  // 🔄 Fetch logs
   useEffect(() => {
     const fetchLogs = async () => {
       try {
@@ -29,6 +30,7 @@ const LogsTable = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // 🔍 Filtering logic
   useEffect(() => {
     let filtered = logs.filter((log) => {
       const matchesSearch =
@@ -41,7 +43,6 @@ const LogsTable = () => {
       const matchesAgent =
         agentFilter === "All" || log.agent_name === agentFilter;
 
-      // Handle date parsing
       let logDate = new Date(log.timestamp);
       if (isNaN(logDate)) {
         const parts = log.timestamp.split(" ");
@@ -74,6 +75,11 @@ const LogsTable = () => {
     setEndDate("");
   };
 
+  // 📤 CSV Export function
+  const exportCSV = () => {
+    window.location.href = `${API_BASE_URL}/api/export`;
+  };
+
   return (
     <div className="log-table-container">
       <h2>📜 Recent Log Entries</h2>
@@ -86,20 +92,14 @@ const LogsTable = () => {
           onChange={(e) => setSearchTerm(e.target.value)}
         />
 
-        <select
-          value={severityFilter}
-          onChange={(e) => setSeverityFilter(e.target.value)}
-        >
+        <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}>
           <option value="All">All Severities</option>
           <option value="High">High</option>
           <option value="Medium">Medium</option>
           <option value="Low">Low</option>
         </select>
 
-        <select
-          value={agentFilter}
-          onChange={(e) => setAgentFilter(e.target.value)}
-        >
+        <select value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
           {agentNames.map((agent, i) => (
             <option key={i} value={agent}>
               {agent}
@@ -109,21 +109,18 @@ const LogsTable = () => {
 
         <div className="date-filters">
           <label>From:</label>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-          />
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+
           <label>To:</label>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-          />
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </div>
 
         <button className="clear-btn" onClick={clearFilters}>
           Clear Filters
+        </button>
+
+        <button className="export-btn" onClick={exportCSV}>
+          ⬇ Export CSV
         </button>
 
         <span className="result-count">
@@ -148,9 +145,7 @@ const LogsTable = () => {
                 <td>{log.agent_name}</td>
                 <td className="log-message">{log.message}</td>
                 <td>
-                  <span
-                    className={`severity-badge ${log.severity.toLowerCase()}`}
-                  >
+                  <span className={`severity-badge ${log.severity.toLowerCase()}`}>
                     {log.severity}
                   </span>
                 </td>
@@ -160,9 +155,7 @@ const LogsTable = () => {
         </table>
       </div>
 
-      {filteredLogs.length === 0 && (
-        <p className="no-results">No matching logs found.</p>
-      )}
+      {filteredLogs.length === 0 && <p className="no-results">No matching logs found.</p>}
     </div>
   );
 };

@@ -8,18 +8,17 @@ from datetime import datetime
 DB_NAME = "logdb"
 DB_USER = "hero"
 DB_PASS = "hero"
-DB_HOST = "localhost"  # stays localhost because script runs inside Raven VM
+DB_HOST = "localhost"   # script runs locally on Raven VM
 DB_PORT = 5432
 
 # === Directory to scan ===
 LOG_DIR = "/var/log"
 
-# === Maximum number of logs to keep ===
+# === Maximum logs to keep ===
 LOG_LIMIT = 20000
 
 
 def connect_db():
-    """Establish connection to PostgreSQL database."""
     return psycopg2.connect(
         dbname=DB_NAME,
         user=DB_USER,
@@ -30,7 +29,7 @@ def connect_db():
 
 
 def ensure_tables_exist(conn):
-    """Create tables for logs and heartbeat if they don't exist."""
+    """Create logs + agent_status tables if missing."""
     with conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS logs (
@@ -43,6 +42,7 @@ def ensure_tables_exist(conn):
                 hash TEXT UNIQUE
             );
         """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS agent_status (
                 agent_name TEXT PRIMARY KEY,
@@ -50,18 +50,19 @@ def ensure_tables_exist(conn):
                 status TEXT
             );
         """)
+
         conn.commit()
 
 
 def trim_old_logs(conn):
-    """Delete oldest logs if count exceeds LOG_LIMIT."""
+    """Ensure only LOG_LIMIT newest logs remain."""
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM logs;")
         total = cur.fetchone()[0]
 
         if total > LOG_LIMIT:
             excess = total - LOG_LIMIT
-            print(f"🧹 Trimming {excess} old logs...")
+            print(f"🧹 Trimming {excess} logs...")
 
             cur.execute("""
                 DELETE FROM logs
@@ -70,14 +71,14 @@ def trim_old_logs(conn):
                 );
             """, (excess,))
             conn.commit()
-            print("🧹 Cleanup complete.")
         else:
-            print("✅ No cleanup needed; log count within limit.")
+            print(f"Log count OK ({total}/{LOG_LIMIT})")
 
 
 def parse_log_line(line):
-    """Extract timestamp and raw message."""
+    """Extract timestamp + keep raw message."""
     parts = line.strip().split()
+
     if len(parts) >= 3:
         timestamp_str = " ".join(parts[:3])
         try:
@@ -92,21 +93,20 @@ def parse_log_line(line):
 
 
 def compute_hash(filename, message):
-    """Generate SHA256 hash for the log entry."""
     raw = f"{filename}-{message}".encode("utf-8", errors="ignore")
     return hashlib.sha256(raw).hexdigest()
 
 
 def extract_logs():
-    """Scan log directory and insert unique log entries."""
     conn = connect_db()
     ensure_tables_exist(conn)
-    cur = conn.cursor()
+    cursor = conn.cursor()
 
     for root, _, files in os.walk(LOG_DIR):
         for filename in files:
             file_path = os.path.join(root, filename)
 
+            # skip compressed logs
             if file_path.endswith((".gz", ".xz", ".1", ".2", ".old")):
                 continue
 
@@ -119,7 +119,7 @@ def extract_logs():
                         log_time, message = parse_log_line(line)
                         log_hash = compute_hash(filename, message)
 
-                        cur.execute("""
+                        cursor.execute("""
                             INSERT INTO logs (filename, log_time, source, message, agent_name, hash)
                             VALUES (%s, %s, %s, %s, %s, %s)
                             ON CONFLICT (hash) DO NOTHING;
@@ -137,17 +137,16 @@ def extract_logs():
             except Exception as e:
                 print(f"⚠ Error reading {file_path}: {e}")
 
-    cur.close()
+    cursor.close()
 
-    # 🔥 Clean up old logs AFTER inserting new ones
+    # Clean up old logs after inserting new ones
     trim_old_logs(conn)
 
     conn.close()
-    print("✅ Log import completed (duplicates skipped).")
+    print("✅ Log import completed.")
 
 
 def update_heartbeat():
-    """Update or insert heartbeat info for this agent."""
     try:
         conn = connect_db()
         with conn.cursor() as cur:
