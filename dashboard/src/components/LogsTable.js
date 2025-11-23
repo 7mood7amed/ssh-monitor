@@ -6,20 +6,32 @@ const LogsTable = () => {
   const [logs, setLogs] = useState([]);
   const [filteredLogs, setFilteredLogs] = useState([]);
 
+  // Filters
   const [searchTerm, setSearchTerm] = useState("");
   const [severityFilter, setSeverityFilter] = useState("All");
   const [agentFilter, setAgentFilter] = useState("All");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
 
-  // 🔄 Fetch logs
+  // Pagination
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20); // default 20
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
+  // Fetch logs (paginated)
   useEffect(() => {
     const fetchLogs = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/logs`);
+        const res = await fetch(
+          `${API_BASE_URL}/api/logs?page=${page}&limit=${pageSize}`
+        );
         const data = await res.json();
-        setLogs(data);
-        setFilteredLogs(data);
+
+        setLogs(data.logs || []);
+        setFilteredLogs(data.logs || []);
+        setTotal(data.total || 0);
+        setTotalPages(data.totalPages || 1);
       } catch (error) {
         console.error("Error fetching logs:", error);
       }
@@ -28,9 +40,9 @@ const LogsTable = () => {
     fetchLogs();
     const interval = setInterval(fetchLogs, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [page, pageSize]);
 
-  // 🔍 Filtering logic
+  // Apply client-side filters to current page
   useEffect(() => {
     let filtered = logs.filter((log) => {
       const matchesSearch =
@@ -43,6 +55,7 @@ const LogsTable = () => {
       const matchesAgent =
         agentFilter === "All" || log.agent_name === agentFilter;
 
+      // Date parsing
       let logDate = new Date(log.timestamp);
       if (isNaN(logDate)) {
         const parts = log.timestamp.split(" ");
@@ -75,15 +88,29 @@ const LogsTable = () => {
     setEndDate("");
   };
 
-  // 📤 CSV Export function
-  const exportCSV = () => {
+  const handleExportCSV = () => {
     window.location.href = `${API_BASE_URL}/api/export`;
+  };
+
+  const handlePrevPage = () => {
+    setPage((prev) => Math.max(prev - 1, 1));
+  };
+
+  const handleNextPage = () => {
+    setPage((prev) => Math.min(prev + 1, totalPages));
+  };
+
+  const handlePageSizeChange = (e) => {
+    const newSize = Number(e.target.value);
+    setPageSize(newSize);
+    setPage(1); // reset to first page when page size changes
   };
 
   return (
     <div className="log-table-container">
       <h2>📜 Recent Log Entries</h2>
 
+      {/* Filters */}
       <div className="filter-bar">
         <input
           type="text"
@@ -92,14 +119,20 @@ const LogsTable = () => {
           onChange={(e) => setSearchTerm(e.target.value)}
         />
 
-        <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}>
+        <select
+          value={severityFilter}
+          onChange={(e) => setSeverityFilter(e.target.value)}
+        >
           <option value="All">All Severities</option>
           <option value="High">High</option>
           <option value="Medium">Medium</option>
           <option value="Low">Low</option>
         </select>
 
-        <select value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
+        <select
+          value={agentFilter}
+          onChange={(e) => setAgentFilter(e.target.value)}
+        >
           {agentNames.map((agent, i) => (
             <option key={i} value={agent}>
               {agent}
@@ -109,25 +142,35 @@ const LogsTable = () => {
 
         <div className="date-filters">
           <label>From:</label>
-          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
           <label>To:</label>
-          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          <input
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+          />
         </div>
 
         <button className="clear-btn" onClick={clearFilters}>
           Clear Filters
         </button>
 
-        <button className="export-btn" onClick={exportCSV}>
-          ⬇ Export CSV
+        {/* CSV export button – same styling family */}
+        <button className="clear-btn export-btn" onClick={handleExportCSV}>
+          Export CSV
         </button>
 
         <span className="result-count">
-          Showing <b>{filteredLogs.length}</b> / {logs.length} results
+          Showing <b>{filteredLogs.length}</b> of {total} logs (page {page} of{" "}
+          {totalPages})
         </span>
       </div>
 
+      {/* Table */}
       <div className="table-wrapper">
         <table className="log-table">
           <thead>
@@ -145,7 +188,9 @@ const LogsTable = () => {
                 <td>{log.agent_name}</td>
                 <td className="log-message">{log.message}</td>
                 <td>
-                  <span className={`severity-badge ${log.severity.toLowerCase()}`}>
+                  <span
+                    className={`severity-badge ${log.severity.toLowerCase()}`}
+                  >
                     {log.severity}
                   </span>
                 </td>
@@ -155,7 +200,43 @@ const LogsTable = () => {
         </table>
       </div>
 
-      {filteredLogs.length === 0 && <p className="no-results">No matching logs found.</p>}
+      {filteredLogs.length === 0 && (
+        <p className="no-results">No matching logs found.</p>
+      )}
+
+      {/* Pagination controls */}
+      <div className="pagination-bar">
+        <button
+          className="page-btn"
+          onClick={handlePrevPage}
+          disabled={page === 1}
+        >
+          ◀ Prev
+        </button>
+
+        <span className="page-info">
+          Page <b>{page}</b> of {totalPages}
+        </span>
+
+        <button
+          className="page-btn"
+          onClick={handleNextPage}
+          disabled={page === totalPages || totalPages === 0}
+        >
+          Next ▶
+        </button>
+
+        <div className="page-size-control">
+          <span>Show:</span>
+          <select value={pageSize} onChange={handlePageSizeChange}>
+            <option value={10}>10</option>
+            <option value={20}>20</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+          <span>per page</span>
+        </div>
+      </div>
     </div>
   );
 };
