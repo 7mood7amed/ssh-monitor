@@ -4,6 +4,7 @@ import Metrics from "./components/Metrics";
 import AgentStatus from "./components/AgentStatus";
 import ChartPanel from "./components/ChartPanel";
 import LogsTable from "./components/LogsTable";
+import WebTraffic from "./components/WebTraffic";
 import Footer from "./components/Footer";
 import "./App.css";
 
@@ -30,6 +31,7 @@ function App() {
         <ChartPanel refreshTrigger={refreshTrigger} />
         <AgentStatus refreshTrigger={refreshTrigger} />
         <LogsTable refreshTrigger={refreshTrigger} />
+        <WebTraffic refreshTrigger={refreshTrigger} />
       </main>
       <Footer />
     </div>

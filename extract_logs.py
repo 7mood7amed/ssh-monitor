@@ -1,21 +1,43 @@
+# =========================================
+# File: ssh-monitor/extract_logs.py
+# =========================================
 #!/usr/bin/env python3
 import os
 import psycopg2
 import hashlib
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 
-# === PostgreSQL Connection Info ===
-DB_NAME = "logdb"
-DB_USER = "hero"
-DB_PASS = "hero"
-DB_HOST = "localhost"   # script runs locally on Raven VM
-DB_PORT = 5432
+"""
+Multi-agent ready log collector.
 
-# === Directory to scan ===
-LOG_DIR = "/var/log"
+Run example (Raven):
+  AGENT_NAME=raven python3 extract_logs.py
 
-# === Maximum logs to keep ===
-LOG_LIMIT = 20000
+Run on Falcon (collector runs on Falcon but writes into Raven DB):
+  AGENT_NAME=falcon DB_HOST=192.168.56.103 python3 extract_logs.py
+"""
+
+# --- Config via env (safe for multi-VM) ---
+DB_NAME = os.environ.get("DB_NAME", "logdb")
+DB_USER = os.environ.get("DB_USER", "hero")
+DB_PASS = os.environ.get("DB_PASS", "hero")
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+
+AGENT_NAME = os.environ.get("AGENT_NAME", "raven")
+
+LOG_DIR = os.environ.get("LOG_DIR", "/var/log")
+LOG_LIMIT = int(os.environ.get("LOG_LIMIT", "20000"))
+
+_APACHE_TS_RE = re.compile(
+    r"\[(?P<ts>\d{2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}\s+[+\-]\d{4})\]"
+)
+
+
+def _looks_like_apache_access(file_path: str) -> bool:
+    fp = (file_path or "").lower()
+    return ("apache2" in fp and "access" in fp) or fp.endswith("access.log")
 
 
 def connect_db():
@@ -24,89 +46,118 @@ def connect_db():
         user=DB_USER,
         password=DB_PASS,
         host=DB_HOST,
-        port=DB_PORT
+        port=DB_PORT,
     )
 
 
 def ensure_tables_exist(conn):
-    """Create logs + agent_status tables if missing."""
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_status (
+                agent_name TEXT PRIMARY KEY,
+                last_heartbeat TIMESTAMP,
+                status TEXT
+            );
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS logs (
                 id SERIAL PRIMARY KEY,
                 filename TEXT,
                 log_time TIMESTAMP,
                 source TEXT,
                 message TEXT,
-                agent_name TEXT,
-                hash TEXT UNIQUE
+                hash TEXT UNIQUE,
+                agent_name TEXT REFERENCES agent_status(agent_name) ON DELETE CASCADE
             );
-        """)
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS agent_status (
-                agent_name TEXT PRIMARY KEY,
-                last_heartbeat TIMESTAMP,
-                status TEXT
-            );
-        """)
-
+            """
+        )
         conn.commit()
 
 
 def trim_old_logs(conn):
-    """Ensure only LOG_LIMIT newest logs remain."""
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM logs;")
         total = cur.fetchone()[0]
+        if total <= LOG_LIMIT:
+            return
 
-        if total > LOG_LIMIT:
-            excess = total - LOG_LIMIT
-            print(f"🧹 Trimming {excess} logs...")
+        excess = total - LOG_LIMIT
+        cur.execute(
+            """
+            DELETE FROM logs
+            WHERE id IN (
+                SELECT id FROM logs
+                ORDER BY log_time ASC
+                LIMIT %s
+            );
+            """,
+            (excess,),
+        )
+        conn.commit()
 
-            cur.execute("""
-                DELETE FROM logs
-                WHERE id IN (
-                    SELECT id FROM logs ORDER BY log_time ASC LIMIT %s
-                );
-            """, (excess,))
-            conn.commit()
-        else:
-            print(f"Log count OK ({total}/{LOG_LIMIT})")
 
+def parse_log_line(line: str, file_path: str):
+    raw = (line or "").strip()
+    if not raw:
+        return datetime.now(), ""
 
-def parse_log_line(line):
-    """Extract timestamp + keep raw message."""
-    parts = line.strip().split()
+    if _looks_like_apache_access(file_path):
+        m = _APACHE_TS_RE.search(raw)
+        if m:
+            try:
+                ts = datetime.strptime(m.group("ts"), "%d/%b/%Y:%H:%M:%S %z")
+                ts_utc = ts.astimezone(timezone.utc).replace(tzinfo=None, microsecond=0)
+                return ts_utc, raw
+            except ValueError:
+                pass
 
+    parts = raw.split()
     if len(parts) >= 3:
         timestamp_str = " ".join(parts[:3])
         try:
             log_time = datetime.strptime(timestamp_str, "%b %d %H:%M:%S")
             log_time = log_time.replace(year=datetime.now().year)
+            return log_time, raw
         except ValueError:
-            log_time = datetime.now()
-    else:
-        log_time = datetime.now()
+            pass
 
-    return log_time, line.strip()
+    return datetime.now(), raw
 
 
-def compute_hash(filename, message):
-    raw = f"{filename}-{message}".encode("utf-8", errors="ignore")
+def compute_hash(file_path: str, message: str):
+    raw = f"{file_path}-{message}".encode("utf-8", errors="ignore")
     return hashlib.sha256(raw).hexdigest()
+
+
+def update_heartbeat(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO agent_status (agent_name, last_heartbeat, status)
+            VALUES (%s, NOW(), 'active')
+            ON CONFLICT (agent_name)
+            DO UPDATE SET last_heartbeat = NOW(), status = 'active';
+            """,
+            (AGENT_NAME,),
+        )
+        conn.commit()
 
 
 def extract_logs():
     conn = connect_db()
     ensure_tables_exist(conn)
-    cursor = conn.cursor()
 
+    # Heartbeat first so FK insert always works
+    update_heartbeat(conn)
+
+    cursor = conn.cursor()
     for root, _, files in os.walk(LOG_DIR):
         for filename in files:
             file_path = os.path.join(root, filename)
 
-            # skip compressed logs
             if file_path.endswith((".gz", ".xz", ".1", ".2", ".old")):
                 continue
 
@@ -116,53 +167,26 @@ def extract_logs():
                         if not line.strip():
                             continue
 
-                        log_time, message = parse_log_line(line)
-                        log_hash = compute_hash(filename, message)
+                        log_time, message = parse_log_line(line, file_path)
+                        log_hash = compute_hash(file_path, message)
 
-                        cursor.execute("""
-                            INSERT INTO logs (filename, log_time, source, message, agent_name, hash)
+                        cursor.execute(
+                            """
+                            INSERT INTO logs (filename, log_time, source, message, hash, agent_name)
                             VALUES (%s, %s, %s, %s, %s, %s)
                             ON CONFLICT (hash) DO NOTHING;
-                        """, (
-                            filename,
-                            log_time,
-                            file_path,
-                            message,
-                            "raven",
-                            log_hash
-                        ))
-
+                            """,
+                            (filename, log_time, file_path, message, log_hash, AGENT_NAME),
+                        )
                 conn.commit()
-
             except Exception as e:
                 print(f"⚠ Error reading {file_path}: {e}")
 
     cursor.close()
-
-    # Clean up old logs after inserting new ones
     trim_old_logs(conn)
-
     conn.close()
-    print("✅ Log import completed.")
-
-
-def update_heartbeat():
-    try:
-        conn = connect_db()
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO agent_status (agent_name, last_heartbeat, status)
-                VALUES (%s, NOW(), 'active')
-                ON CONFLICT (agent_name)
-                DO UPDATE SET last_heartbeat = NOW(), status = 'active';
-            """, ("raven",))
-            conn.commit()
-        conn.close()
-        print("💓 Heartbeat updated.")
-    except Exception as e:
-        print(f"⚠ Heartbeat update failed: {e}")
+    print(f"✅ Log import completed for agent: {AGENT_NAME}")
 
 
 if __name__ == "__main__":
     extract_logs()
-    update_heartbeat()
