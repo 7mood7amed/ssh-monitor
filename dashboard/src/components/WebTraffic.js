@@ -1,23 +1,14 @@
+// =========================================
 // File: dashboard/src/components/WebTraffic.js
-import React, { useEffect, useMemo, useState } from "react";
+// (ADD: severity column + severity filter + badge)
+// =========================================
+import React, { useEffect, useState } from "react";
 import API_BASE_URL from "../config";
-import "./LogsTable.css";
+import "./LogsTable.css"; // includes .severity-badge.{low,medium,high}
 import "./WebTraffic.css";
-
-const toDateTimeLocalValue = (d) => {
-    if (!d) return "";
-    const pad = (n) => String(n).padStart(2, "0");
-    const yyyy = d.getFullYear();
-    const mm = pad(d.getMonth() + 1);
-    const dd = pad(d.getDate());
-    const hh = pad(d.getHours());
-    const mi = pad(d.getMinutes());
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
-};
 
 const WebTraffic = () => {
     const [logs, setLogs] = useState([]);
-
     const [page, setPage] = useState(1);
     const [pageSize, setPageSize] = useState(50);
     const [total, setTotal] = useState(0);
@@ -25,39 +16,14 @@ const WebTraffic = () => {
 
     const [searchTerm, setSearchTerm] = useState("");
     const [statusFilter, setStatusFilter] = useState("All");
-
-    const [sortField, setSortField] = useState("timestamp"); // timestamp|status|ip|url|method
-    const [sortOrder, setSortOrder] = useState("desc"); // asc|desc
-
-    // Optional date range (datetime-local)
-    const [start, setStart] = useState("");
-    const [end, setEnd] = useState("");
-
-    // Reset to page 1 when filters change
-    useEffect(() => {
-        setPage(1);
-    }, [searchTerm, statusFilter, pageSize, sortField, sortOrder, start, end]);
-
-    const queryString = useMemo(() => {
-        const params = new URLSearchParams();
-        params.set("page", String(page));
-        params.set("limit", String(pageSize));
-
-        if (searchTerm.trim()) params.set("search", searchTerm.trim());
-        if (statusFilter !== "All") params.set("status", statusFilter);
-
-        if (start) params.set("start", start);
-        if (end) params.set("end", end);
-
-        params.set("sort", sortField);
-        params.set("order", sortOrder);
-        return params.toString();
-    }, [page, pageSize, searchTerm, statusFilter, sortField, sortOrder, start, end]);
+    const [severityFilter, setSeverityFilter] = useState("All");
 
     useEffect(() => {
         const fetchWebLogs = async () => {
             try {
-                const res = await fetch(`${API_BASE_URL}/api/web_logs?${queryString}`);
+                const res = await fetch(
+                    `${API_BASE_URL}/api/web_logs?page=${page}&limit=${pageSize}`
+                );
                 const data = await res.json();
                 setLogs(data.logs || []);
                 setTotal(data.total || 0);
@@ -68,13 +34,28 @@ const WebTraffic = () => {
         };
 
         fetchWebLogs();
-    }, [queryString]);
+    }, [page, pageSize]);
+
+    const filtered = logs.filter((log) => {
+        const url = (log.url || "").toLowerCase();
+        const ip = (log.ip || "").toLowerCase();
+        const sev = (log.severity || "").toLowerCase();
+
+        const matchSearch =
+            url.includes(searchTerm.toLowerCase()) ||
+            ip.includes(searchTerm.toLowerCase());
+
+        const matchStatus =
+            statusFilter === "All" || String(log.status) === statusFilter;
+
+        const matchSeverity =
+            severityFilter === "All" || sev === severityFilter.toLowerCase();
+
+        return matchSearch && matchStatus && matchSeverity;
+    });
 
     const handlePrev = () => setPage((p) => Math.max(p - 1, 1));
     const handleNext = () => setPage((p) => Math.min(p + 1, totalPages || 1));
-
-    // Client-side filtering removed (server-side now). Keep for safety display only.
-    const visible = logs;
 
     return (
         <section className="log-table-container web-traffic-container">
@@ -88,7 +69,10 @@ const WebTraffic = () => {
                     onChange={(e) => setSearchTerm(e.target.value)}
                 />
 
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                >
                     <option value="All">All Status Codes</option>
                     <option value="200">200 OK</option>
                     <option value="301">301 Redirect</option>
@@ -98,48 +82,19 @@ const WebTraffic = () => {
                     <option value="500">500 Server Error</option>
                 </select>
 
-                <select value={sortField} onChange={(e) => setSortField(e.target.value)}>
-                    <option value="timestamp">Sort: Time</option>
-                    <option value="status">Sort: Status</option>
-                    <option value="ip">Sort: IP</option>
-                    <option value="url">Sort: URL</option>
-                    <option value="method">Sort: Method</option>
-                </select>
-
-                <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
-                    <option value="desc">Order: Desc</option>
-                    <option value="asc">Order: Asc</option>
-                </select>
-
-                <input
-                    type="datetime-local"
-                    value={start}
-                    onChange={(e) => setStart(e.target.value)}
-                    title="Start time"
-                />
-                <input
-                    type="datetime-local"
-                    value={end}
-                    onChange={(e) => setEnd(e.target.value)}
-                    title="End time"
-                />
-
-                <button
-                    className="clear-btn"
-                    onClick={() => {
-                        setSearchTerm("");
-                        setStatusFilter("All");
-                        setSortField("timestamp");
-                        setSortOrder("desc");
-                        setStart("");
-                        setEnd("");
-                    }}
+                <select
+                    value={severityFilter}
+                    onChange={(e) => setSeverityFilter(e.target.value)}
                 >
-                    Clear
-                </button>
+                    <option value="All">All Severity</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                </select>
 
                 <span className="result-count">
-                    Showing <b>{visible.length}</b> of {total} requests (page {page} of {totalPages})
+                    Showing <b>{filtered.length}</b> of {total} requests (page {page} of{" "}
+                    {totalPages})
                 </span>
             </div>
 
@@ -151,29 +106,44 @@ const WebTraffic = () => {
                             <th>IP</th>
                             <th>Method</th>
                             <th>URL</th>
+                            <th>Severity</th>
                             <th>Status</th>
                             <th>User-Agent</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {visible.map((log, i) => (
-                            <tr key={i}>
-                                <td>{log.timestamp}</td>
-                                <td>{log.ip}</td>
-                                <td>{log.method}</td>
-                                <td className="log-message url-cell">{log.url}</td>
-                                <td>{log.status}</td>
-                                <td className="log-message">{log.user_agent}</td>
-                            </tr>
-                        ))}
+                        {filtered.map((log, i) => {
+                            const sev = (log.severity || "low").toLowerCase();
+                            return (
+                                <tr key={i}>
+                                    <td>{log.timestamp}</td>
+                                    <td>{log.ip}</td>
+                                    <td>{log.method}</td>
+                                    <td className="log-message url-cell">{log.url}</td>
+                                    <td>
+                                        <span className={`severity-badge ${sev}`}>
+                                            {sev}
+                                        </span>
+                                    </td>
+                                    <td>{log.status}</td>
+                                    <td className="log-message">{log.user_agent}</td>
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
 
-            {visible.length === 0 && <p className="no-results">No web traffic logs found.</p>}
+            {filtered.length === 0 && (
+                <p className="no-results">No web traffic logs found.</p>
+            )}
 
             <div className="pagination-bar">
-                <button className="page-btn" onClick={handlePrev} disabled={page === 1}>
+                <button
+                    className="page-btn"
+                    onClick={handlePrev}
+                    disabled={page === 1}
+                >
                     ◀ Prev
                 </button>
 
@@ -181,7 +151,11 @@ const WebTraffic = () => {
                     Page <b>{page}</b> of {totalPages}
                 </span>
 
-                <button className="page-btn" onClick={handleNext} disabled={page === totalPages || totalPages === 0}>
+                <button
+                    className="page-btn"
+                    onClick={handleNext}
+                    disabled={page === totalPages || totalPages === 0}
+                >
                     Next ▶
                 </button>
 

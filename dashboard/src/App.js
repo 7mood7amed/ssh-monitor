@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import Header from "./components/Header";
 import Metrics from "./components/Metrics";
 import AgentStatus from "./components/AgentStatus";
