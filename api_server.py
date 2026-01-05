@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import ipaddress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
@@ -70,6 +70,19 @@ def _parse_iso_dt(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         return None
 
+def _parse_yyyy_mm_dd(value: Optional[str]) -> Optional[datetime]:
+    """
+    Accepts YYYY-MM-DD from HTML date inputs.
+    Returns naive datetime at 00:00:00, or None.
+    """
+    if not value:
+        return None
+    v = value.strip()
+    try:
+        return datetime.strptime(v, "%Y-%m-%d")
+    except ValueError:
+        return None
+
 
 def _utcnow_naive() -> datetime:
     return datetime.utcnow().replace(tzinfo=None, microsecond=0)
@@ -90,10 +103,27 @@ def _agent_status_from_heartbeat(last_heartbeat: Optional[datetime]) -> str:
 # =========================================================
 @app.route("/api/logs", methods=["GET"])
 def get_logs():
+    """
+    Server-side filtering + pagination.
+
+    Query params:
+      page, limit
+      q        -> searches message/source/agent_name via ILIKE
+      agent    -> exact match (omit or 'All' => no filter)
+      start    -> YYYY-MM-DD (inclusive)
+      end      -> YYYY-MM-DD (inclusive)
+    """
     try:
         page = _safe_int(request.args.get("page"), 1, min_value=1)
         limit = _safe_int(request.args.get("limit"), 20, min_value=1, max_value=200)
         offset = (page - 1) * limit
+
+        q = (request.args.get("q") or "").strip()
+        agent = (request.args.get("agent") or "").strip()
+
+        start_dt = _parse_yyyy_mm_dd(request.args.get("start"))
+        end_dt = _parse_yyyy_mm_dd(request.args.get("end"))
+        end_exclusive = (end_dt + timedelta(days=1)) if end_dt else None
 
         def classify_severity(msg: str) -> str:
             msg_l = (msg or "").lower()
@@ -103,35 +133,63 @@ def get_logs():
                 return "medium"
             return "low"
 
+        where: List[str] = []
+        params: List[Any] = []
+
+        if q:
+            like = f"%{q}%"
+            where.append("(message ILIKE %s OR source ILIKE %s OR agent_name ILIKE %s)")
+            params.extend([like, like, like])
+
+        if agent and agent.lower() != "all":
+            where.append("agent_name = %s")
+            params.append(agent)
+
+        if start_dt:
+            where.append("log_time >= %s")
+            params.append(start_dt)
+
+        if end_exclusive:
+            where.append("log_time < %s")
+            params.append(end_exclusive)
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM logs;")
-                total = cur.fetchone()[0]
+                # Count WITH filters
+                cur.execute(f"SELECT COUNT(*) FROM logs {where_sql};", tuple(params))
+                total = int(cur.fetchone()[0] or 0)
 
+                # Page WITH filters
                 cur.execute(
-                    """
-                    SELECT log_time, source, message, agent_name
+                    f"""
+                    SELECT id, log_time, source, message, agent_name
                     FROM logs
+                    {where_sql}
                     ORDER BY log_time DESC
                     LIMIT %s OFFSET %s;
                     """,
-                    (limit, offset),
+                    tuple(params + [limit, offset]),
                 )
                 rows = cur.fetchall()
 
-        logs = [
-            {
-                "timestamp": _format_dt(log_time),
-                "source": source,
-                "message": message,
-                "agent_name": agent_name,
-                "severity": classify_severity(message),
-            }
-            for (log_time, source, message, agent_name) in rows
-        ]
+        logs = []
+        for (log_id, log_time, source, message, agent_name) in rows:
+            logs.append(
+                {
+                    "id": int(log_id),
+                    "timestamp": _format_dt(log_time),
+                    "source": source,
+                    "message": message,
+                    "agent_name": agent_name,
+                    "severity": classify_severity(message),  # keep computed (per your note)
+                }
+            )
 
         total_pages = (total + limit - 1) // limit if total else 1
         return jsonify({"logs": logs, "total": total, "totalPages": total_pages, "page": page})
+
     except Exception as e:
         print("Error in /api/logs:", e)
         return jsonify({"error": str(e)}), 500
@@ -677,6 +735,115 @@ def home():
         }
     )
 
+
+@app.route("/api/ssh_events", methods=["GET"])
+def get_ssh_events():
+    """
+    Server-side pagination + filtering for SSH events.
+
+    Query params:
+      page, limit
+      q        -> searches raw/username/ip (ILIKE)
+      user     -> exact username
+      ip       -> exact ip
+      event    -> event_type
+      outcome  -> success|fail|info
+      start    -> YYYY-MM-DD inclusive
+      end      -> YYYY-MM-DD inclusive
+    """
+    try:
+        page = _safe_int(request.args.get("page"), 1, min_value=1)
+        limit = _safe_int(request.args.get("limit"), 20, min_value=1, max_value=200)
+        offset = (page - 1) * limit
+
+        q = (request.args.get("q") or "").strip()
+        user = (request.args.get("user") or "").strip()
+        ip = (request.args.get("ip") or "").strip()
+        event = (request.args.get("event") or "").strip()
+        outcome = (request.args.get("outcome") or "").strip()
+
+        start_dt = _parse_yyyy_mm_dd(request.args.get("start"))
+        end_dt = _parse_yyyy_mm_dd(request.args.get("end"))
+        end_exclusive = (end_dt + timedelta(days=1)) if end_dt else None
+
+        where: List[str] = []
+        params: List[Any] = []
+
+        if q:
+            like = f"%{q}%"
+            where.append("(raw ILIKE %s OR username ILIKE %s OR ip ILIKE %s)")
+            params.extend([like, like, like])
+
+        if user:
+            where.append("username = %s")
+            params.append(user)
+
+        if ip:
+            where.append("ip = %s")
+            params.append(ip)
+
+        if event:
+            where.append("event_type = %s")
+            params.append(event)
+
+        if outcome:
+            where.append("outcome = %s")
+            params.append(outcome)
+
+        if start_dt:
+            where.append("event_time >= %s")
+            params.append(start_dt)
+
+        if end_exclusive:
+            where.append("event_time < %s")
+            params.append(end_exclusive)
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT COUNT(*) FROM public.ssh_events {where_sql};", tuple(params))
+        total = int(cur.fetchone()[0] or 0)
+
+        cur.execute(
+            f"""
+            SELECT id, event_time, agent_name, event_type, outcome, auth_method, username, ip, port, raw
+            FROM public.ssh_events
+            {where_sql}
+            ORDER BY event_time DESC
+            LIMIT %s OFFSET %s;
+            """,
+            tuple(params + [limit, offset]),
+        )
+        rows = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        events = []
+        for r in rows:
+            events.append(
+                {
+                    "id": int(r[0]),
+                    "timestamp": str(r[1]),
+                    "agent_name": r[2],
+                    "event_type": r[3],
+                    "outcome": r[4],
+                    "auth_method": r[5],
+                    "username": r[6],
+                    "ip": r[7],
+                    "port": r[8],
+                    "message": r[9],
+                }
+            )
+
+        total_pages = (total + limit - 1) // limit if total else 1
+        return jsonify({"events": events, "total": total, "totalPages": total_pages, "page": page})
+
+    except Exception as e:
+        print("Error in /api/ssh_events:", e)
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

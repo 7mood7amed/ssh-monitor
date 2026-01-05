@@ -1,0 +1,206 @@
+/* File: dashboard/src/components/Table.css */
+
+.table-card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin: 24px auto;
+    width: 95%;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.table-title {
+    color: #003366;
+    margin: 0 0 14px 0;
+    font-size: 1.2rem;
+    border-bottom: 2px solid #e5e9f0;
+    padding-bottom: 8px;
+}
+
+.filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin: 12px 0 14px;
+}
+
+.filter-bar input,
+.filter-bar select {
+    padding: 8px 10px;
+    border: 1px solid #d7dee8;
+    border-radius: 8px;
+    outline: none;
+    min-height: 36px;
+    font-size: 14px;
+    background: #fff;
+}
+
+.filter-bar input {
+    flex: 1 1 220px;
+}
+
+.filter-bar select {
+    flex: 0 0 auto;
+}
+
+.result-count {
+    margin-left: auto;
+    font-size: 13px;
+    color: #2b3a4a;
+    opacity: 0.9;
+}
+
+.table-wrapper {
+    overflow-x: auto;
+    border: 1px solid #e5e9f0;
+    border-radius: 10px;
+}
+
+.data-table {
+    width: 100%;
+    min-width: 980px;
+    border-collapse: collapse;
+    background: #fff;
+}
+
+.data-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #f6f9fc;
+    color: #1c2b3a;
+    font-weight: 700;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid #e5e9f0;
+    padding: 12px 10px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.data-table tbody td {
+    border-bottom: 1px solid #eef2f7;
+    padding: 10px;
+    font-size: 14px;
+    color: #223243;
+    vertical-align: top;
+}
+
+.data-table tbody tr:nth-child(even) {
+    background: #fbfdff;
+}
+
+.data-table tbody tr:hover {
+    background: #f2f8ff;
+}
+
+.cell-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12.5px;
+}
+
+.cell-truncate {
+    max-width: 520px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.no-results {
+    margin: 12px 0 0;
+    color: #6a7a8b;
+    font-size: 14px;
+}
+
+.pagination-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 14px;
+}
+
+.page-btn {
+    background: #004c7f;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.page-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.page-info {
+    color: #2b3a4a;
+    font-size: 14px;
+}
+
+.page-size-control {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: #2b3a4a;
+    font-size: 14px;
+}
+
+.page-size-control select {
+    padding: 6px 10px;
+    border: 1px solid #d7dee8;
+    border-radius: 8px;
+}
+
+.expand-btn {
+    border: 1px solid #d7dee8;
+    background: #fff;
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.expand-btn:hover {
+    background: #f6f9fc;
+}
+
+.expand-btn:focus {
+    outline: 2px solid rgba(0, 76, 127, 0.25);
+    outline-offset: 2px;
+}
+
+.expanded-row td {
+    background: #f9fbff;
+    border-bottom: 1px solid #eef2f7;
+}
+
+.expanded-content {
+    padding: 10px 6px;
+    display: grid;
+    gap: 10px;
+}
+
+.expanded-label {
+    font-weight: 800;
+    color: #1c2b3a;
+}
+
+.expanded-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12.5px;
+    color: #223243;
+    background: #ffffff;
+    border: 1px solid #e5e9f0;
+    border-radius: 10px;
+    padding: 10px;
+}

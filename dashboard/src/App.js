@@ -1,24 +1,24 @@
-import React, { useEffect, useState, useRef, useMemo } from "react";
+import React, { useEffect, useState } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 import Header from "./components/Header";
-import Metrics from "./components/Metrics";
-import AgentStatus from "./components/AgentStatus";
-import ChartPanel from "./components/ChartPanel";
-import LogsTable from "./components/LogsTable";
-import WebTraffic from "./components/WebTraffic";
 import Footer from "./components/Footer";
+
+import OverviewPage from "./pages/OverviewPage";
+import SshLogsPage from "./pages/SshLogsPage";
+import WebTrafficPage from "./pages/WebTrafficPage";
+
 import "./App.css";
 
 function App() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date().toLocaleTimeString());
-  const REFRESH_INTERVAL = 30000; // 30 seconds
+  const REFRESH_INTERVAL_MS = 30000;
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setRefreshTrigger((prev) => prev + 1);
+      setRefreshTrigger((v) => v + 1);
       setLastUpdated(new Date().toLocaleTimeString());
-      console.log("🔄 Dashboard refreshed at", new Date().toLocaleTimeString());
-    }, REFRESH_INTERVAL);
+    }, REFRESH_INTERVAL_MS);
 
     return () => clearInterval(interval);
   }, []);
@@ -27,11 +27,14 @@ function App() {
     <div className="app">
       <Header lastUpdated={lastUpdated} />
       <main>
-        <Metrics refreshTrigger={refreshTrigger} />
-        <ChartPanel refreshTrigger={refreshTrigger} />
-        <AgentStatus refreshTrigger={refreshTrigger} />
-        <LogsTable refreshTrigger={refreshTrigger} />
-        <WebTraffic refreshTrigger={refreshTrigger} />
+        <Routes>
+          <Route path="/" element={<OverviewPage refreshTrigger={refreshTrigger} />} />
+          <Route path="/ssh" element={<SshLogsPage refreshTrigger={refreshTrigger} />} />
+          <Route path="/web" element={<WebTrafficPage refreshTrigger={refreshTrigger} />} />
+
+          {/* future: /ftp, /scan */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </main>
       <Footer />
     </div>
