@@ -3,6 +3,7 @@
 # File: ssh-monitor/extract_logs.py
 # Task 8: store only useful logs (SSH auth + Apache login/admin/suspicious)
 # Cursor-based ingestion (NO hash) + SSH event parsing
+# + FTP: ingest /var/log/vsftpd.log into logs table (no python parsing)
 # =========================================
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ DB_PASS = os.environ.get("DB_PASS", "hero")
 DB_HOST = os.environ.get("DB_HOST", "localhost")
 DB_PORT = int(os.environ.get("DB_PORT", "5432"))
 
+# Default agent label for this script (SSH ingestion)
 AGENT_NAME = os.environ.get("AGENT_NAME", "SSH").strip()
 if AGENT_NAME.lower() == "raven":
     AGENT_NAME = "SSH"
@@ -40,15 +42,18 @@ INCLUDE_SSH_SESSION_EVENTS = os.environ.get("INCLUDE_SSH_SESSION_EVENTS", "0").s
 FIRST_RUN_START_AT_END = os.environ.get("FIRST_RUN_START_AT_END", "0").strip() != "0"
 ON_ROTATION_START_AT_END = os.environ.get("ON_ROTATION_START_AT_END", "1").strip() != "0"
 
-# Watch only these logs (Option A)
+# Watch only these logs (Option A) + FTP
 AUTH_GLOB = "/var/log/auth.log*"
 APACHE_ACCESS_GLOB = "/var/log/apache2/access.log*"
 APACHE_ERROR_GLOB = "/var/log/apache2/error.log*"
-WATCH_GLOBS = (AUTH_GLOB, APACHE_ACCESS_GLOB, APACHE_ERROR_GLOB)
+VSFTPD_LOG = "/var/log/vsftpd.log"  # <-- FTP protocol log
+
+WATCH_GLOBS = (AUTH_GLOB, APACHE_ACCESS_GLOB, APACHE_ERROR_GLOB, VSFTPD_LOG)
 
 AUTH_PREFIX = "auth.log"
 ACCESS_PREFIX = "access.log"
 ERROR_PREFIX = "error.log"
+VSFTPD_BASENAME = "vsftpd.log"
 
 # Tunables for “useful web traffic”
 WEB_KEEP_KEYWORDS = tuple(
@@ -337,10 +342,24 @@ def parse_ssh_event(message: str) -> Optional[dict]:
     if INCLUDE_SSH_SESSION_EVENTS:
         m = _RE_SESSION_OPEN.search(msg)
         if m:
-            return {"event_type": "session_open", "outcome": "info", "auth_method": None, "username": _norm_user(m.group("user")), "ip": None, "port": None}
+            return {
+                "event_type": "session_open",
+                "outcome": "info",
+                "auth_method": None,
+                "username": _norm_user(m.group("user")),
+                "ip": None,
+                "port": None,
+            }
         m = _RE_SESSION_CLOSE.search(msg)
         if m:
-            return {"event_type": "session_close", "outcome": "info", "auth_method": None, "username": _norm_user(m.group("user")), "ip": None, "port": None}
+            return {
+                "event_type": "session_close",
+                "outcome": "info",
+                "auth_method": None,
+                "username": _norm_user(m.group("user")),
+                "ip": None,
+                "port": None,
+            }
 
     return None
 
@@ -482,7 +501,16 @@ def compute_start(prev: CursorState, current_inode: Optional[int], current_size:
 
     return min(prev.byte_offset, current_size)
 
-def insert_log_row(conn, file_path: str, log_time: datetime, message: str) -> Optional[int]:
+def insert_log_row(
+    conn,
+    file_path: str,
+    log_time: datetime,
+    message: str,
+    agent_name: Optional[str] = None,
+) -> Optional[int]:
+    # Allow per-source agent labels (FTP vs SSH vs Apache)
+    agent = agent_name or AGENT_NAME
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -490,7 +518,7 @@ def insert_log_row(conn, file_path: str, log_time: datetime, message: str) -> Op
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id;
             """,
-            (os.path.basename(file_path), log_time, file_path, message, AGENT_NAME),
+            (os.path.basename(file_path), log_time, file_path, message, agent),
         )
         return int(cur.fetchone()[0])
 
@@ -563,7 +591,7 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                         dropped += 1
                         continue
 
-                    log_id = insert_log_row(conn, path, dt, msg_norm)
+                    log_id = insert_log_row(conn, path, dt, msg_norm, agent_name="SSH")
                     ev = parse_ssh_event(msg_norm)
                     if ev:
                         insert_ssh_event(conn, log_id, dt, ev, msg_norm)
@@ -579,7 +607,17 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     if not should_store_apache_access(parsed):
                         dropped += 1
                         continue
-                    insert_log_row(conn, path, parsed["dt"], parsed["raw"])
+                    insert_log_row(conn, path, parsed["dt"], parsed["raw"], agent_name="APACHE")
+                    inserted += 1
+                    continue
+                # vsftpd.log (FTP)
+                if base == VSFTPD_BASENAME:
+                    msg = _safe_strip(raw_line)
+                    if not msg:
+                        dropped += 1
+                        continue
+
+                    insert_log_row(conn, path, datetime.now().replace(microsecond=0), msg, agent_name="FTP")
                     inserted += 1
                     continue
 
@@ -592,7 +630,7 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     if not _RE_APACHE_ERROR_SEV.search(msg):
                         dropped += 1
                         continue
-                    insert_log_row(conn, path, datetime.now(), msg)
+                    insert_log_row(conn, path, datetime.now().replace(microsecond=0), msg, agent_name="APACHE")
                     inserted += 1
                     continue
 
@@ -604,6 +642,7 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
 
         save_cursor(conn, path, inode, end_offset)
         return (inserted, dropped)
+
     except Exception:
         conn.rollback()
         return (0, 0)

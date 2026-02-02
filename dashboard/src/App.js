@@ -6,6 +6,7 @@ import Footer from "./components/Footer";
 import OverviewPage from "./pages/OverviewPage";
 import SshLogsPage from "./pages/SshLogsPage";
 import WebTrafficPage from "./pages/WebTrafficPage";
+import FtpLogsPage from "./pages/FtpLogsPage";
 
 import "./App.css";
 
@@ -31,8 +32,8 @@ function App() {
           <Route path="/" element={<OverviewPage refreshTrigger={refreshTrigger} />} />
           <Route path="/ssh" element={<SshLogsPage refreshTrigger={refreshTrigger} />} />
           <Route path="/web" element={<WebTrafficPage refreshTrigger={refreshTrigger} />} />
+          <Route path="/ftp" element={<FtpLogsPage refreshTrigger={refreshTrigger} />} />
 
-          {/* future: /ftp, /scan */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
