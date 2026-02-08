@@ -127,7 +127,7 @@ export default function FtpLogs({ refreshTrigger }) {
       params.set("page", "1");
       params.set("limit", String(FETCH_LIMIT));
 
-      const res = await fetch(`${API_BASE_URL}/api/ftp_logs?${params.toString()}`);
+      const res = await fetch(`${API_BASE_URL}/api/logs?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
       const data = await res.json();
