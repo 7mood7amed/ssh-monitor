@@ -3,7 +3,8 @@
 # File: ssh-monitor/extract_logs.py
 # Task 8: store only useful logs (SSH auth + Apache login/admin/suspicious)
 # Cursor-based ingestion (NO hash) + SSH event parsing
-# + FTP: ingest /var/log/vsftpd.log into logs table (no python parsing)
+# + FTP: ingest /var/log/vsftpd.log into logs table
+# + FTP brute-force rule: >=5 real auth failures from same IP within 60s -> SEVERITY=HIGH (tagged in message)
 # =========================================
 
 from __future__ import annotations
@@ -13,8 +14,9 @@ import re
 import glob
 import ipaddress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Iterable, Optional, Tuple
+from collections import defaultdict
 
 import psycopg2
 
@@ -71,6 +73,11 @@ WEB_KEEP_STATUSES = set(
 )
 WEB_KEEP_POST_ALWAYS = os.environ.get("WEB_KEEP_POST_ALWAYS", "0").strip() != "0"
 MAX_UA_LEN = int(os.environ.get("MAX_UA_LEN", "240"))
+
+# ---------------------------
+# FTP brute-force tracker (in-memory per run)
+# ---------------------------
+ftp_fail_tracker = defaultdict(list)  # ip -> [datetime, datetime, ...]
 
 # ---------------------------
 # Shared helpers
@@ -610,14 +617,51 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     insert_log_row(conn, path, parsed["dt"], parsed["raw"], agent_name="APACHE")
                     inserted += 1
                     continue
-                # vsftpd.log (FTP)
+
+                # vsftpd.log (FTP) + brute force detection
                 if base == VSFTPD_BASENAME:
                     msg = _safe_strip(raw_line)
                     if not msg:
                         dropped += 1
                         continue
 
-                    insert_log_row(conn, path, datetime.now().replace(microsecond=0), msg, agent_name="FTP")
+                    severity = "low"
+
+                    # Extract IPv4 even if log shows ::ffff:x.x.x.x
+                    ip_match = re.search(r"::ffff:(\d+\.\d+\.\d+\.\d+)", msg) or re.search(r"(\d+\.\d+\.\d+\.\d+)", msg)
+                    ip = ip_match.group(1) if ip_match else "unknown"
+
+                    msg_l = msg.lower()
+
+                    # Count only real auth failures (NOT "Please login with USER and PASS")
+                    is_fail = (
+                        "fail login" in msg_l
+                        or "530 login incorrect" in msg_l
+                        or ("530" in msg_l and "login incorrect" in msg_l)
+                        or "authentication failure" in msg_l
+                        or "login failed" in msg_l
+                    )
+
+                    if is_fail:
+                        now = datetime.now()
+                        ftp_fail_tracker[ip].append(now)
+
+                        one_minute_ago = now - timedelta(seconds=60)
+                        ftp_fail_tracker[ip] = [t for t in ftp_fail_tracker[ip] if t > one_minute_ago]
+
+                        if len(ftp_fail_tracker[ip]) >= 5:
+                            severity = "HIGH"
+
+                    msg = f"{msg} [SEVERITY={severity}]"
+
+                    insert_log_row(
+                        conn,
+                        path,
+                        datetime.now().replace(microsecond=0),
+                        msg,
+                        agent_name="FTP",
+                    )
+
                     inserted += 1
                     continue
 
@@ -643,7 +687,9 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
         save_cursor(conn, path, inode, end_offset)
         return (inserted, dropped)
 
-    except Exception:
+    except Exception as e:
+        # Don't fail silently—print the error so you can debug quickly
+        print(f"[ERROR] ingest_file failed for {path}: {e}")
         conn.rollback()
         return (0, 0)
 
