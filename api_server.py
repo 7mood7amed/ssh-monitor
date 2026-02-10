@@ -14,7 +14,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
+import psycopg2.extras
+import csv
+import io
 from flask_cors import CORS
 
 # -----------------------------
@@ -759,11 +762,20 @@ def get_web_logs():
 @app.route("/api/ftp_logs", methods=["GET"])
 def get_ftp_logs():
     """
-    Reads from public.logs but ONLY vsftpd.log (FTP).
-    Server-side pagination + search + time range.
+    Reads from public.ftp_events (structured).
+    Server-side pagination + filters.
+
+    Query params:
+      page, limit
+      q (search raw/file_target/username/ip)
+      username
+      ip
+      action
+      from, to   (event_time)
+      sort (event_time|username|ip|action) order (asc|desc)
 
     Returns:
-      { logs: [{timestamp, source, message, agent_name, severity}], total, totalPages, page }
+      { logs: [{timestamp,user,ip,action,file_target,raw}], total, totalPages, page }
     """
     try:
         page = _safe_int(request.args.get("page"), 1, min_value=1)
@@ -771,62 +783,83 @@ def get_ftp_logs():
         offset = (page - 1) * limit
 
         q = (request.args.get("q") or "").strip()
+        username = (request.args.get("username") or "").strip()
+        ip = (request.args.get("ip") or "").strip()
+        action = (request.args.get("action") or "").strip().upper()
+
         dt_from = _parse_dt_param(request.args.get("from"))
         dt_to = _parse_dt_param(request.args.get("to"))
 
-        sort = (request.args.get("sort") or "log_time").strip().lower()
+        sort = (request.args.get("sort") or "event_time").strip().lower()
         order = (request.args.get("order") or "desc").strip().lower()
-        if sort not in {"log_time"}:
-            sort = "log_time"
+        if sort not in {"event_time", "username", "ip", "action"}:
+            sort = "event_time"
         if order not in {"asc", "desc"}:
             order = "desc"
 
-        where = [allowed_logs_where_sql("l"), "l.source LIKE %s"]
-        params: List[Any] = list(allowed_logs_where_params()) + [f"{ALLOWED_VSFTPD_PREFIX}%"]
+        where = ["1=1"]
+        params: List[Any] = []
 
         if q:
-            where.append("(l.message ILIKE %s OR l.source ILIKE %s)")
-            params.extend([f"%{q}%", f"%{q}%"])
+            where.append("""
+              (
+                COALESCE(raw,'') ILIKE %s OR
+                COALESCE(file_target,'') ILIKE %s OR
+                COALESCE(username,'') ILIKE %s OR
+                COALESCE(ip,'') ILIKE %s
+              )
+            """)
+            params.extend([f"%{q}%"] * 4)
 
-        _apply_time_range(where, params, "l.log_time", dt_from, dt_to)
+        if username:
+            where.append("username ILIKE %s")
+            params.append(f"%{username}%")
+
+        if ip:
+            where.append("ip = %s")
+            params.append(ip)
+
+        if action and action != "ALL":
+            where.append("action = %s")
+            params.append(action)
+
+        _apply_time_range(where, params, "event_time", dt_from, dt_to)
 
         where_sql = " AND ".join(where)
 
         conn = get_db_connection()
         cur = conn.cursor()
 
+        # total
         cur.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM public.logs l
-            WHERE {where_sql};
-            """,
+            f"SELECT COUNT(*) FROM public.ftp_events WHERE {where_sql};",
             params,
         )
         total = int(cur.fetchone()[0] or 0)
 
+        # page
         cur.execute(
             f"""
-            SELECT l.log_time, l.source, l.message, l.agent_name
-            FROM public.logs l
+            SELECT event_time, username, ip, action, file_target, raw
+            FROM public.ftp_events
             WHERE {where_sql}
-            ORDER BY l.{sort} {order}
+            ORDER BY {sort} {order}
             LIMIT %s OFFSET %s;
             """,
             params + [limit, offset],
         )
         rows = cur.fetchall()
-
         cur.close()
         conn.close()
 
         logs = [
             {
                 "timestamp": _format_dt(r[0]),
-                "source": r[1],
-                "message": r[2],
-                "agent_name": r[3],
-                "severity": "low",
+                "user": r[1],
+                "ip": r[2],
+                "action": r[3],
+                "file_target": r[4],
+                "raw": r[5],
             }
             for r in rows
         ]
@@ -929,6 +962,188 @@ def home():
         }
     )
 
+
+# -----------------------------
+# alerts 
+# -----------------------------
+
+@app.get("/api/alerts")
+def list_alerts():
+    page = max(int(request.args.get("page", 1)), 1)
+    limit = min(max(int(request.args.get("limit", 20)), 1), 200)
+    offset = (page - 1) * limit
+
+    priority = request.args.get("priority")
+    status = request.args.get("status")
+    source = request.args.get("source")
+    q = request.args.get("q")
+
+    where = []
+    params = {}
+
+    if priority:
+        where.append("priority = %(priority)s")
+        params["priority"] = priority
+
+    if status:
+        where.append("status = %(status)s")
+        params["status"] = status
+
+    if source:
+        where.append("source = %(source)s")
+        params["source"] = source
+
+    if q:
+        where.append("(title ILIKE %(q)s OR description ILIKE %(q)s)")
+        params["q"] = f"%{q}%"
+
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # total count
+            cur.execute(f"SELECT COUNT(*) AS cnt FROM alerts {where_sql}", params)
+            total = cur.fetchone()["cnt"]
+
+            # page rows
+            cur.execute(
+                f"""
+                SELECT id, created_at, source, priority, title, description,
+                       user_name, ip_address, file_target, status
+                FROM alerts
+                {where_sql}
+                ORDER BY created_at DESC
+                LIMIT %(limit)s OFFSET %(offset)s
+                """,
+                {**params, "limit": limit, "offset": offset}
+            )
+            rows = cur.fetchall()
+
+        return jsonify({
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "items": rows
+        })
+    finally:
+        conn.close()
+
+
+@app.get("/api/alerts/<int:alert_id>")
+def get_alert(alert_id: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, created_at, source, priority, title, description,
+                       user_name, ip_address, file_target, status
+                FROM alerts
+                WHERE id = %s
+            """, (alert_id,))
+            alert = cur.fetchone()
+            if not alert:
+                return jsonify({"error": "Alert not found"}), 404
+
+            # linked logs (your unified table)
+            cur.execute("""
+                SELECT l.id, l.log_time, l.source, l.message, l.filename, l.agent_name
+                FROM alert_log_links a
+                JOIN logs l ON l.id = a.log_id
+                WHERE a.alert_id = %s
+                ORDER BY l.log_time DESC
+            """, (alert_id,))
+            linked_logs = cur.fetchall()
+
+        return jsonify({"alert": alert, "linked_logs": linked_logs})
+    finally:
+        conn.close()
+
+@app.patch("/api/alerts/<int:alert_id>")
+def update_alert_status(alert_id: int):
+    data = request.get_json(silent=True) or {}
+    new_status = (data.get("status") or "").strip().lower()
+
+    allowed = {"new", "acknowledged", "resolved"}
+    if new_status not in allowed:
+        return jsonify({"error": f"Invalid status. Allowed: {sorted(allowed)}"}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE alerts SET status=%s WHERE id=%s", (new_status, alert_id))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "Alert not found"}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True, "id": alert_id, "status": new_status})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.get("/api/alerts/<int:alert_id>/export_csv")
+def export_alert_logs_csv(alert_id: int):
+    """
+    Export the linked raw log rows for this alert as CSV.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cur.execute("SELECT id, title FROM alerts WHERE id=%s", (alert_id,))
+        alert = cur.fetchone()
+        if not alert:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "Alert not found"}), 404
+
+        # IMPORTANT: keep Task 8 safety (allowed sources only)
+        allowed_where = allowed_logs_where_sql("l")
+        allowed_params = list(allowed_logs_where_params())
+
+        cur.execute(
+            f"""
+            SELECT l.id, l.log_time, l.agent_name, l.source, l.message
+            FROM alert_log_links a
+            JOIN logs l ON l.id = a.log_id
+            WHERE a.alert_id = %s
+              AND {allowed_where}
+            ORDER BY l.log_time DESC
+            """,
+            [alert_id] + allowed_params
+        )
+        rows = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["id", "log_time", "agent_name", "source", "message"])
+
+        for r in rows:
+            writer.writerow([
+                r["id"],
+                _format_dt(r["log_time"]),
+                r.get("agent_name") or "",
+                r.get("source") or "",
+                r.get("message") or "",
+            ])
+
+        csv_data = output.getvalue()
+        output.close()
+
+        filename = f"alert_{alert_id}_logs.csv"
+        return Response(
+            csv_data,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

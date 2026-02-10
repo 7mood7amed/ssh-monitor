@@ -7,6 +7,7 @@ import OverviewPage from "./pages/OverviewPage";
 import SshLogsPage from "./pages/SshLogsPage";
 import WebTrafficPage from "./pages/WebTrafficPage";
 import FtpLogsPage from "./pages/FtpLogsPage";
+import AlertsPage from "./pages/AlertsPage";
 
 import "./App.css";
 
@@ -33,6 +34,7 @@ function App() {
           <Route path="/ssh" element={<SshLogsPage refreshTrigger={refreshTrigger} />} />
           <Route path="/web" element={<WebTrafficPage refreshTrigger={refreshTrigger} />} />
           <Route path="/ftp" element={<FtpLogsPage refreshTrigger={refreshTrigger} />} />
+          <Route path="/alerts" element={<AlertsPage refreshTrigger={refreshTrigger} />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

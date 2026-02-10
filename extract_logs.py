@@ -5,6 +5,11 @@
 # Cursor-based ingestion (NO hash) + SSH event parsing
 # + FTP: ingest /var/log/vsftpd.log into logs table
 # + FTP brute-force rule: >=5 real auth failures from same IP within 60s -> SEVERITY=HIGH (tagged in message)
+#
+# FIXES INCLUDED:
+# ✅ FTP uses REAL vsftpd timestamp (not datetime.now)
+# ✅ FTP severity always uppercase (LOW/HIGH)
+# ✅ Optional FTP noise filter (default ON: keep only useful FTP events)
 # =========================================
 
 from __future__ import annotations
@@ -78,6 +83,33 @@ MAX_UA_LEN = int(os.environ.get("MAX_UA_LEN", "240"))
 # FTP brute-force tracker (in-memory per run)
 # ---------------------------
 ftp_fail_tracker = defaultdict(list)  # ip -> [datetime, datetime, ...]
+
+# Optional FTP noise filtering (recommended ON by default)
+# If INCLUDE_FTP_NOISE=1, we ingest every vsftpd line (can flood DB).
+INCLUDE_FTP_NOISE = os.environ.get("INCLUDE_FTP_NOISE", "0").strip() != "0"
+
+# “Useful” FTP signals to keep when noise filter is ON
+_FTP_KEEP_NEEDLES = (
+    "FAIL LOGIN",
+    "OK LOGIN",
+    "530 Login incorrect",
+    "UPLOAD",
+    "DOWNLOAD",
+    "FAIL UPLOAD",
+    "FAIL DOWNLOAD",
+    "FAIL DELETE",
+    "FAIL RENAME",
+    "FAIL MKDIR",
+    "FAIL RMDIR",
+    # command keywords (often appear in FTP command lines)
+    "STOR ",
+    "RETR ",
+    "DELE ",
+    "RNFR ",
+    "RNTO ",
+    "MKD ",
+    "RMD ",
+)
 
 # ---------------------------
 # Shared helpers
@@ -439,6 +471,27 @@ def should_store_apache_access(parsed: dict) -> bool:
 
 
 # ---------------------------
+# vsftpd timestamp parsing (FIX)
+# ---------------------------
+
+_RE_VSFTPD_TS = re.compile(
+    r"^(?P<dow>\w+)\s+(?P<mon>\w+)\s+(?P<day>\d+)\s+(?P<time>\d+:\d+:\d+)\s+(?P<year>\d{4})"
+)
+_MONTHS = {"Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+           "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12}
+
+def _parse_vsftpd_time(line: str) -> Optional[datetime]:
+    m = _RE_VSFTPD_TS.match(line or "")
+    if not m:
+        return None
+    mon = _MONTHS.get(m.group("mon"))
+    if not mon:
+        return None
+    hh, mm, ss = map(int, m.group("time").split(":"))
+    return datetime(int(m.group("year")), mon, int(m.group("day")), hh, mm, ss)
+
+
+# ---------------------------
 # Cursor ingestion / DB
 # ---------------------------
 
@@ -618,20 +671,30 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     inserted += 1
                     continue
 
-                # vsftpd.log (FTP) + brute force detection
+                # vsftpd.log (FTP) + brute force detection (FIXED)
                 if base == VSFTPD_BASENAME:
                     msg = _safe_strip(raw_line)
                     if not msg:
                         dropped += 1
                         continue
 
-                    severity = "low"
+                    msg_l = msg.lower()
+
+                    # Optional noise filter: keep only meaningful FTP lines
+                    if not INCLUDE_FTP_NOISE:
+                        if not any(n.lower() in msg_l for n in _FTP_KEEP_NEEDLES):
+                            dropped += 1
+                            continue
+
+                    # Use REAL timestamp from line if present (FIX)
+                    dt = _parse_vsftpd_time(msg) or datetime.now().replace(microsecond=0)
 
                     # Extract IPv4 even if log shows ::ffff:x.x.x.x
                     ip_match = re.search(r"::ffff:(\d+\.\d+\.\d+\.\d+)", msg) or re.search(r"(\d+\.\d+\.\d+\.\d+)", msg)
                     ip = ip_match.group(1) if ip_match else "unknown"
 
-                    msg_l = msg.lower()
+                    # Always uppercase severity (FIX)
+                    severity = "LOW"
 
                     # Count only real auth failures (NOT "Please login with USER and PASS")
                     is_fail = (
@@ -643,22 +706,21 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     )
 
                     if is_fail:
-                        now = datetime.now()
-                        ftp_fail_tracker[ip].append(now)
+                        ftp_fail_tracker[ip].append(dt)
 
-                        one_minute_ago = now - timedelta(seconds=60)
+                        one_minute_ago = dt - timedelta(seconds=60)
                         ftp_fail_tracker[ip] = [t for t in ftp_fail_tracker[ip] if t > one_minute_ago]
 
                         if len(ftp_fail_tracker[ip]) >= 5:
                             severity = "HIGH"
 
-                    msg = f"{msg} [SEVERITY={severity}]"
+                    msg_out = f"{msg} [SEVERITY={severity}]"
 
                     insert_log_row(
                         conn,
                         path,
-                        datetime.now().replace(microsecond=0),
-                        msg,
+                        dt,
+                        msg_out,
                         agent_name="FTP",
                     )
 

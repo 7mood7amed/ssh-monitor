@@ -40,6 +40,11 @@ function Header({ lastUpdated }) {
           <NavLink to="/ftp" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             FTP Logs
           </NavLink>
+
+          <NavLink to="/alerts" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            alerts
+          </NavLink>
+
         </nav>
       </div>
     </header>

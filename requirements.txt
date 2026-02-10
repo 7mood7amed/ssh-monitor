@@ -1,2 +1,16 @@
-psycopg2
-paramiko
+# =========================
+# Raven Monitoring Backend
+# =========================
+
+# Web API
+Flask==3.1.2
+flask-cors==6.0.1
+
+# Database
+psycopg2-binary==2.9.11
+
+# Environment / config (optional but useful)
+python-dotenv==1.0.1
+
+# Production server (optional but recommended later)
+gunicorn==22.0.0
