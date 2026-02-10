@@ -22,6 +22,7 @@ ACTION_MAP = [
     ("OK LOGIN", "LOGIN_SUCCESS"),
     ("STOR", "UPLOAD"),
     ("RETR", "DOWNLOAD"),
+    ("DELE", "DELETE"),
     ("FAIL UPLOAD", "UPLOAD"),
     ("FAIL DOWNLOAD", "DOWNLOAD"),
     ("FAIL DELETE", "DELETE"),
@@ -30,7 +31,6 @@ ACTION_MAP = [
     ("FAIL RMDIR", "RMDIR"),
     ("UPLOAD", "UPLOAD"),
     ("DOWNLOAD", "DOWNLOAD"),
-    ("DELE", "DELETE"),
     ("RNFR", "RENAME"),
     ("RNTO", "RENAME"),
     ("MKD", "MKDIR"),
@@ -93,8 +93,16 @@ def main():
         msg = r["message"] or ""
         event_time = r["log_time"] or parse_ts(msg)
 
-        um = USER_RE.search(msg)
-        username = um.group("user") if um else None
+        brackets = re.findall(r"\[([^\]]+)\]", msg)
+        username = None
+        if brackets:
+            # choose last non-pid token
+            for b in reversed(brackets):
+                b2 = b.strip()
+                if b2.lower().startswith("pid "):
+                    continue
+                username = b2
+                break
 
         im = IP_RE.search(msg)
         ip = im.group("ip") if im else None
