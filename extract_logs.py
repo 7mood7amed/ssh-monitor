@@ -509,10 +509,10 @@ def upsert_heartbeat(conn) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO public.agent_status (agent_name, last_heartbeat, status)
-            VALUES (%s, NOW(), 'active')
+            INSERT INTO public.agent_status (agent_name, last_heartbeat)
+            VALUES (%s, NOW())
             ON CONFLICT (agent_name)
-            DO UPDATE SET last_heartbeat = NOW(), status = 'active';
+            DO UPDATE SET last_heartbeat = NOW();
             """,
             (AGENT_NAME,),
         )

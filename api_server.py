@@ -271,9 +271,16 @@ def get_agents():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT agent_name, last_heartbeat, status
-            FROM public.agent_status
-            ORDER BY agent_name ASC;
+            SELECT
+                agent_name,
+                last_heartbeat,
+                CASE
+                    WHEN last_heartbeat >= NOW() - INTERVAL '2 minutes' THEN 'active'
+                    WHEN last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'warning'
+                    ELSE 'inactive'
+                END AS status
+            FROM agent_status
+            ORDER BY agent_name;
             """
         )
         rows = cur.fetchall()
@@ -518,27 +525,17 @@ def get_logs():
 
 @app.route("/api/ssh_events", methods=["GET"])
 def get_ssh_events():
-    """
-    Server-side pagination + filters.
-    Query params:
-      page, limit
-      q (search raw)
-      username
-      ip
-      event_type
-      outcome
-      sort (event_time|username|ip|event_type|outcome) order
-      from, to
-    """
     try:
         page = _safe_int(request.args.get("page"), 1, min_value=1)
         limit = _safe_int(request.args.get("limit"), 20, min_value=1, max_value=200)
         offset = (page - 1) * limit
 
         q = (request.args.get("q") or "").strip()
-        username = (request.args.get("username") or "").strip()
+
+        # ✅ FRONTEND sends: user, event
+        user = (request.args.get("user") or "").strip()
         ip = (request.args.get("ip") or "").strip()
-        event_type = (request.args.get("event_type") or "").strip()
+        event = (request.args.get("event") or "").strip()
         outcome = (request.args.get("outcome") or "").strip()
 
         dt_from = _parse_dt_param(request.args.get("from"))
@@ -556,17 +553,27 @@ def get_ssh_events():
         params: List[Any] = []
 
         if q:
-            where.append("raw ILIKE %s")
-            params.append(f"%{q}%")
-        if username:
+            where.append("""
+              (
+                COALESCE(raw,'') ILIKE %s OR
+                COALESCE(username,'') ILIKE %s OR
+                COALESCE(ip,'') ILIKE %s
+              )
+            """)
+            params.extend([f"%{q}%"] * 3)
+
+        if user:
             where.append("username ILIKE %s")
-            params.append(f"%{username}%")
+            params.append(f"%{user}%")
+
         if ip:
             where.append("ip = %s")
             params.append(ip)
-        if event_type and event_type.lower() != "all":
+
+        if event and event.lower() != "all":
             where.append("event_type = %s")
-            params.append(event_type)
+            params.append(event)
+
         if outcome and outcome.lower() != "all":
             where.append("outcome = %s")
             params.append(outcome)
@@ -578,15 +585,22 @@ def get_ssh_events():
         conn = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute(
-            f"SELECT COUNT(*) FROM public.ssh_events WHERE {where_sql};",
-            params,
-        )
+        # total
+        cur.execute(f"SELECT COUNT(*) FROM public.ssh_events WHERE {where_sql};", params)
         total = int(cur.fetchone()[0] or 0)
 
+        # ✅ IMPORTANT: include id + alias fields that frontend expects:
         cur.execute(
             f"""
-            SELECT agent_name, event_time, event_type, outcome, auth_method, username, ip, port, raw
+            SELECT
+                id,
+                event_time,
+                username,
+                ip,
+                event_type,
+                outcome,
+                auth_method,
+                raw
             FROM public.ssh_events
             WHERE {where_sql}
             ORDER BY {sort} {order}
@@ -595,26 +609,26 @@ def get_ssh_events():
             params + [limit, offset],
         )
         rows = cur.fetchall()
-
         cur.close()
         conn.close()
 
-        out = [
+        # ✅ Match frontend keys exactly:
+        events = [
             {
-                "agent_name": r[0],
-                "event_time": _format_dt(r[1]),
-                "event_type": r[2],
-                "outcome": r[3],
-                "auth_method": r[4],
-                "username": r[5],
-                "ip": r[6],
-                "port": r[7],
-                "raw": r[8],
+                "id": r[0],
+                "timestamp": _format_dt(r[1]),   # Time column uses r.timestamp
+                "username": r[2],
+                "ip": r[3],
+                "event_type": r[4],
+                "outcome": r[5],
+                "auth_method": r[6],            # Method column uses r.auth_method
+                "message": r[7],                # Raw column uses r.message
             }
             for r in rows
         ]
+
         total_pages = (total + limit - 1) // limit if total else 1
-        return jsonify({"events": out, "total": total, "totalPages": total_pages, "page": page})
+        return jsonify({"events": events, "total": total, "totalPages": total_pages, "page": page})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
