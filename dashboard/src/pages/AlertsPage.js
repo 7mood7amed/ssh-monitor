@@ -60,7 +60,6 @@ function StatusBadge({ status }) {
 
 function formatDateTime(createdAt) {
     if (!createdAt) return "—";
-    // backend returns RFC-like "Tue, 10 Feb 2026 ..."
     const dt = new Date(createdAt);
     if (Number.isNaN(dt.getTime())) return String(createdAt);
     return dt.toLocaleString();
@@ -74,6 +73,7 @@ export default function AlertsPage({ refreshTrigger }) {
     const [priority, setPriority] = useState("all");
     const [status, setStatus] = useState("all");
     const [q, setQ] = useState("");
+    const [includeInternal, setIncludeInternal] = useState(true);
 
     // paging
     const [page, setPage] = useState(1);
@@ -96,6 +96,7 @@ export default function AlertsPage({ refreshTrigger }) {
         if (priority !== "all") params.set("priority", priority);
         if (status !== "all") params.set("status", status);
         if (q.trim()) params.set("q", q.trim());
+        params.set("include_internal", includeInternal ? "1" : "0");
 
         const res = await fetch(`${API_BASE_URL}/api/alerts?${params.toString()}`);
         if (!res.ok) throw new Error(`Failed to fetch alerts: ${res.status}`);
@@ -135,19 +136,18 @@ export default function AlertsPage({ refreshTrigger }) {
     }
 
     function exportCsv(alertId) {
-        // triggers download in browser
         window.open(`${API_BASE_URL}/api/alerts/${alertId}/export_csv`, "_blank");
     }
 
     useEffect(() => {
         fetchAlerts().catch((e) => console.error(e));
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [page, priority, status, refreshTrigger]);
+    }, [page, priority, status, includeInternal, refreshTrigger]);
 
-    // search should reset paging
+    // search/filter should reset paging
     useEffect(() => {
         setPage(1);
-    }, [priority, status, q]);
+    }, [priority, status, q, includeInternal]);
 
     useEffect(() => {
         if (selectedId == null) return;
@@ -172,9 +172,20 @@ export default function AlertsPage({ refreshTrigger }) {
                 <input
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
-                    placeholder="Search title/description..."
+                    placeholder="Search title/description."
                     style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db", minWidth: 240 }}
                 />
+
+                <label style={{ display: "flex", alignItems: "center", gap: 8, userSelect: "none" }}>
+                    <input
+                        type="checkbox"
+                        checked={includeInternal}
+                        onChange={(e) => setIncludeInternal(e.target.checked)}
+                    />
+                    <span style={{ fontSize: 13, color: "#374151" }}>
+                        Show internal (127.0.0.1 / ::1)
+                    </span>
+                </label>
 
                 <select
                     value={priority}
@@ -193,7 +204,7 @@ export default function AlertsPage({ refreshTrigger }) {
                     onChange={(e) => setStatus(e.target.value)}
                     style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db" }}
                 >
-                    <option value="all">All statuses</option>
+                    <option value="all">All status</option>
                     <option value="new">New</option>
                     <option value="acknowledged">Acknowledged</option>
                     <option value="resolved">Resolved</option>
@@ -203,237 +214,213 @@ export default function AlertsPage({ refreshTrigger }) {
                     onClick={() => fetchAlerts().catch((e) => console.error(e))}
                     style={{
                         padding: "10px 14px",
-                        borderRadius: 8,
+                        borderRadius: 10,
                         border: "1px solid #d1d5db",
-                        background: "#fff",
                         cursor: "pointer",
-                        fontWeight: 700,
+                        background: "#fff",
+                        fontWeight: 600,
                     }}
                 >
                     Refresh
                 </button>
             </div>
 
-            {/* Table */}
-            <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                        <tr style={{ textAlign: "left" }}>
-                            <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Time</th>
-                            <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Priority</th>
-                            <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Status</th>
-                            <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Title</th>
-                            <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {items.map((a) => (
-                            <tr key={a.id}>
-                                <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap" }}>
-                                    {formatDateTime(a.created_at)}
-                                </td>
-                                <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                                    <PriorityBadge priority={a.priority} />
-                                </td>
-                                <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                                    <StatusBadge status={a.status} />
-                                </td>
-                                <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
-                                    <div style={{ fontWeight: 800 }}>{a.title}</div>
-                                    <div style={{ opacity: 0.8 }}>{a.description}</div>
-                                </td>
-                                <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap" }}>
-                                    <button
-                                        onClick={() => setSelectedId(a.id)}
-                                        style={{
-                                            padding: "8px 10px",
-                                            borderRadius: 8,
-                                            border: "1px solid #d1d5db",
-                                            background: "#fff",
-                                            cursor: "pointer",
-                                            fontWeight: 700,
-                                            marginRight: 8,
-                                        }}
-                                    >
-                                        View
-                                    </button>
-
-                                    <button
-                                        onClick={() => updateStatus(a.id, "acknowledged").catch((e) => alert(e.message))}
-                                        style={{
-                                            padding: "8px 10px",
-                                            borderRadius: 8,
-                                            border: "1px solid #d1d5db",
-                                            background: "#fff",
-                                            cursor: "pointer",
-                                            fontWeight: 700,
-                                            marginRight: 8,
-                                        }}
-                                    >
-                                        Ack
-                                    </button>
-
-                                    <button
-                                        onClick={() => updateStatus(a.id, "resolved").catch((e) => alert(e.message))}
-                                        style={{
-                                            padding: "8px 10px",
-                                            borderRadius: 8,
-                                            border: "1px solid #d1d5db",
-                                            background: "#fff",
-                                            cursor: "pointer",
-                                            fontWeight: 700,
-                                            marginRight: 8,
-                                        }}
-                                    >
-                                        Resolve
-                                    </button>
-
-                                    <button
-                                        onClick={() => exportCsv(a.id)}
-                                        style={{
-                                            padding: "8px 10px",
-                                            borderRadius: 8,
-                                            border: "1px solid #d1d5db",
-                                            background: "#fff",
-                                            cursor: "pointer",
-                                            fontWeight: 700,
-                                        }}
-                                    >
-                                        Export CSV
-                                    </button>
-                                </td>
-                            </tr>
-                        ))}
-
-                        {!items.length && (
-                            <tr>
-                                <td colSpan={5} style={{ padding: 14, opacity: 0.8 }}>
-                                    No alerts found.
-                                </td>
-                            </tr>
-                        )}
-                    </tbody>
-                </table>
-            </div>
-
-            {/* Pagination */}
-            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
-                <button
-                    disabled={page <= 1}
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    style={{
-                        padding: "8px 12px",
-                        borderRadius: 8,
-                        border: "1px solid #d1d5db",
-                        background: page <= 1 ? "#f3f4f6" : "#fff",
-                        cursor: page <= 1 ? "not-allowed" : "pointer",
-                        fontWeight: 700,
-                    }}
-                >
-                    Prev
-                </button>
-
-                <div style={{ fontWeight: 700 }}>
-                    Page {page} / {totalPages} (Total: {total})
-                </div>
-
-                <button
-                    disabled={page >= totalPages}
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    style={{
-                        padding: "8px 12px",
-                        borderRadius: 8,
-                        border: "1px solid #d1d5db",
-                        background: page >= totalPages ? "#f3f4f6" : "#fff",
-                        cursor: page >= totalPages ? "not-allowed" : "pointer",
-                        fontWeight: 700,
-                    }}
-                >
-                    Next
-                </button>
-            </div>
-
-            {/* Details panel */}
-            {selectedId != null && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 420px", gap: 16 }}>
+                {/* List */}
                 <div
                     style={{
-                        marginTop: 16,
-                        padding: 14,
                         border: "1px solid #e5e7eb",
                         borderRadius: 12,
+                        overflow: "hidden",
                         background: "#fff",
                     }}
                 >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                        <div style={{ fontWeight: 900, fontSize: 16 }}>Alert Details (ID: {selectedId})</div>
-                        <button
-                            onClick={() => {
-                                setSelectedId(null);
-                                setDetails(null);
-                            }}
-                            style={{
-                                padding: "8px 10px",
-                                borderRadius: 8,
-                                border: "1px solid #d1d5db",
-                                background: "#fff",
-                                cursor: "pointer",
-                                fontWeight: 700,
-                            }}
-                        >
-                            Close
-                        </button>
+                    <div
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "180px 90px 120px 1fr 260px",
+                            gap: 8,
+                            padding: 12,
+                            background: "#f9fafb",
+                            borderBottom: "1px solid #e5e7eb",
+                            fontWeight: 700,
+                            fontSize: 13,
+                            color: "#374151",
+                        }}
+                    >
+                        <div>Time</div>
+                        <div>Priority</div>
+                        <div>Status</div>
+                        <div>Title</div>
+                        <div>Actions</div>
                     </div>
 
-                    {detailsLoading && <div style={{ marginTop: 10 }}>Loading…</div>}
+                    {items.map((a) => (
+                        <div
+                            key={a.id}
+                            style={{
+                                display: "grid",
+                                gridTemplateColumns: "180px 90px 120px 1fr 260px",
+                                gap: 8,
+                                padding: 12,
+                                borderBottom: "1px solid #f3f4f6",
+                                cursor: "pointer",
+                                background: selectedId === a.id ? "#f0f9ff" : "#fff",
+                            }}
+                            onClick={() => setSelectedId(a.id)}
+                            title={a.description || ""}
+                        >
+                            <div style={{ fontSize: 13 }}>{formatDateTime(a.created_at)}</div>
+                            <div><PriorityBadge priority={a.priority} /></div>
+                            <div><StatusBadge status={a.status} /></div>
+                            <div style={{ fontWeight: 700 }}>{a.title}</div>
 
-                    {!detailsLoading && details?.alert && (
-                        <>
-                            <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                                <PriorityBadge priority={details.alert.priority} />
-                                <StatusBadge status={details.alert.status} />
-                                <div style={{ opacity: 0.8 }}>{formatDateTime(details.alert.created_at)}</div>
+                            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); setSelectedId(a.id); }}
+                                    style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" }}
+                                >
+                                    View
+                                </button>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateStatus(a.id, "acknowledged").catch((err) => alert(err.message));
+                                    }}
+                                    style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" }}
+                                >
+                                    Ack
+                                </button>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateStatus(a.id, "resolved").catch((err) => alert(err.message));
+                                    }}
+                                    style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" }}
+                                >
+                                    Resolve
+                                </button>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); exportCsv(a.id); }}
+                                    style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" }}
+                                >
+                                    Export CSV
+                                </button>
                             </div>
+                        </div>
+                    ))}
 
-                            <div style={{ marginTop: 10 }}>
-                                <div style={{ fontWeight: 900 }}>{details.alert.title}</div>
-                                <div style={{ opacity: 0.9 }}>{details.alert.description}</div>
+                    {/* Pagination */}
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: 12, alignItems: "center" }}>
+                        <div style={{ fontSize: 13, color: "#6b7280" }}>
+                            Total: {total}
+                        </div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <button
+                                disabled={page <= 1}
+                                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid #d1d5db",
+                                    background: "#fff",
+                                    cursor: page <= 1 ? "not-allowed" : "pointer",
+                                    opacity: page <= 1 ? 0.5 : 1,
+                                }}
+                            >
+                                Prev
+                            </button>
+                            <div style={{ fontSize: 13 }}>
+                                Page {page} / {totalPages}
                             </div>
+                            <button
+                                disabled={page >= totalPages}
+                                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                style={{
+                                    padding: "8px 10px",
+                                    borderRadius: 10,
+                                    border: "1px solid #d1d5db",
+                                    background: "#fff",
+                                    cursor: page >= totalPages ? "not-allowed" : "pointer",
+                                    opacity: page >= totalPages ? 0.5 : 1,
+                                }}
+                            >
+                                Next
+                            </button>
+                        </div>
+                    </div>
+                </div>
 
-                            <div style={{ marginTop: 12, fontWeight: 900 }}>Linked Logs</div>
-                            <div style={{ overflowX: "auto", marginTop: 8 }}>
-                                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                                    <thead>
-                                        <tr style={{ textAlign: "left" }}>
-                                            <th style={{ padding: 8, borderBottom: "1px solid #e5e7eb" }}>Time</th>
-                                            <th style={{ padding: 8, borderBottom: "1px solid #e5e7eb" }}>Source</th>
-                                            <th style={{ padding: 8, borderBottom: "1px solid #e5e7eb" }}>Message</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {(details.linked_logs || []).map((l) => (
-                                            <tr key={l.id}>
-                                                <td style={{ padding: 8, borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap" }}>
-                                                    {l.log_time ? new Date(l.log_time).toLocaleString() : "—"}
-                                                </td>
-                                                <td style={{ padding: 8, borderBottom: "1px solid #f3f4f6" }}>{l.source}</td>
-                                                <td style={{ padding: 8, borderBottom: "1px solid #f3f4f6" }}>{l.message}</td>
-                                            </tr>
-                                        ))}
+                {/* Details */}
+                <div
+                    style={{
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 12,
+                        padding: 12,
+                        background: "#fff",
+                        minHeight: 240,
+                    }}
+                >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <h3 style={{ margin: 0 }}>Details</h3>
+                        {selectedId != null && (
+                            <button
+                                onClick={() => fetchAlertDetails(selectedId).catch((e) => console.error(e))}
+                                style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" }}
+                            >
+                                Refresh
+                            </button>
+                        )}
+                    </div>
 
-                                        {!details.linked_logs?.length && (
-                                            <tr>
-                                                <td colSpan={3} style={{ padding: 10, opacity: 0.8 }}>
-                                                    No linked logs found for this alert.
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
+                    {selectedId == null ? (
+                        <div style={{ color: "#6b7280", marginTop: 12 }}>Select an alert to view linked evidence.</div>
+                    ) : detailsLoading ? (
+                        <div style={{ marginTop: 12 }}>Loading...</div>
+                    ) : !details ? (
+                        <div style={{ color: "#6b7280", marginTop: 12 }}>No details loaded.</div>
+                    ) : (
+                        <div style={{ marginTop: 12 }}>
+                            <div style={{ fontSize: 13, color: "#6b7280" }}>Alert</div>
+                            <div style={{ fontWeight: 800, marginTop: 4 }}>{details.alert?.title}</div>
+                            <div style={{ marginTop: 6, fontSize: 13 }}>{details.alert?.description}</div>
+
+                            <div style={{ marginTop: 12, fontSize: 13, color: "#6b7280" }}>Linked evidence</div>
+                            <div style={{ marginTop: 6, display: "grid", gap: 8 }}>
+                                {(details.linked_items || []).map((it, idx) => (
+                                    <div
+                                        key={idx}
+                                        style={{
+                                            border: "1px solid #e5e7eb",
+                                            borderRadius: 10,
+                                            padding: 10,
+                                            background: "#f9fafb",
+                                        }}
+                                    >
+                                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                            <div style={{ fontWeight: 800, fontSize: 13 }}>
+                                                {it.log_type}
+                                            </div>
+                                            <div style={{ fontSize: 12, color: "#6b7280" }}>
+                                                {it.time}
+                                            </div>
+                                        </div>
+                                        <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>
+                                            <div><b>Source:</b> {it.source}</div>
+                                            <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
+                                                <b>Message:</b> {it.message}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {(!details.linked_items || details.linked_items.length === 0) && (
+                                    <div style={{ color: "#6b7280" }}>No linked items.</div>
+                                )}
                             </div>
-                        </>
+                        </div>
                     )}
                 </div>
-            )}
+            </div>
         </div>
     );
 }

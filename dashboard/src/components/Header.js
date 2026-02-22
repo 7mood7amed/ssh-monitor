@@ -41,6 +41,10 @@ function Header({ lastUpdated }) {
             FTP Logs
           </NavLink>
 
+          <NavLink to="/nmap" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Nmap Logs
+          </NavLink>
+
           <NavLink to="/alerts" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             alerts
           </NavLink>

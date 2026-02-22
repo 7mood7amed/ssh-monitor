@@ -19,6 +19,7 @@ import psycopg2.extras
 import csv
 import io
 from flask_cors import CORS
+import ipaddress
 
 # -----------------------------
 # Flask
@@ -885,6 +886,138 @@ def get_ftp_logs():
 
 
 # -----------------------------
+# API: nmap logs 
+# -----------------------------
+
+@app.route("/api/nmap_findings", methods=["GET"])
+def get_nmap_findings():
+    """
+    Reads from public.nmap_findings.
+    Server-side pagination + filters.
+
+    Query params:
+      page, limit
+      q (search target/host/service/product/version/extra)
+      target
+      host
+      port
+      state
+      service
+      from, to (scan_time)
+      sort (scan_time|target|host|port|state|service) order (asc|desc)
+
+    Returns:
+      { items: [...], total, totalPages, page }
+    """
+    try:
+        page = _safe_int(request.args.get("page"), 1, min_value=1)
+        limit = _safe_int(request.args.get("limit"), 50, min_value=1, max_value=200)
+        offset = (page - 1) * limit
+
+        q = (request.args.get("q") or "").strip()
+        target = (request.args.get("target") or "").strip()
+        host = (request.args.get("host") or "").strip()
+        port = (request.args.get("port") or "").strip()
+        state = (request.args.get("state") or "").strip().lower()
+        service = (request.args.get("service") or "").strip().lower()
+
+        dt_from = _parse_dt_param(request.args.get("from"))
+        dt_to = _parse_dt_param(request.args.get("to"))
+
+        sort = (request.args.get("sort") or "scan_time").strip().lower()
+        order = (request.args.get("order") or "desc").strip().lower()
+        allowed_sorts = {"scan_time", "target", "host", "port", "state", "service"}
+        if sort not in allowed_sorts:
+            sort = "scan_time"
+        if order not in {"asc", "desc"}:
+            order = "desc"
+
+        where = ["1=1"]
+        params: List[Any] = []
+
+        if q:
+            where.append("""
+                (
+                  COALESCE(target,'') ILIKE %s OR
+                  COALESCE(host,'') ILIKE %s OR
+                  COALESCE(service,'') ILIKE %s OR
+                  COALESCE(product,'') ILIKE %s OR
+                  COALESCE(version,'') ILIKE %s OR
+                  COALESCE(extra,'') ILIKE %s
+                )
+            """)
+            params.extend([f"%{q}%"] * 6)
+
+        if target:
+            where.append("target ILIKE %s")
+            params.append(f"%{target}%")
+
+        if host:
+            where.append("host = %s")
+            params.append(host)
+
+        if port and port.isdigit():
+            where.append("port = %s")
+            params.append(int(port))
+
+        if state and state != "all":
+            where.append("LOWER(state) = %s")
+            params.append(state)
+
+        if service and service != "all":
+            where.append("LOWER(service) = %s")
+            params.append(service)
+
+        _apply_time_range(where, params, "scan_time", dt_from, dt_to)
+
+        where_sql = " AND ".join(where)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT COUNT(*) FROM public.nmap_findings WHERE {where_sql};", params)
+        total = int(cur.fetchone()[0] or 0)
+
+        cur.execute(
+            f"""
+            SELECT id, scan_time, agent_name, target, host, port, proto, state, service, product, version, extra
+            FROM public.nmap_findings
+            WHERE {where_sql}
+            ORDER BY {sort} {order}
+            LIMIT %s OFFSET %s;
+            """,
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        items = [
+            {
+                "id": r[0],
+                "scan_time": _format_dt(r[1]),
+                "agent_name": r[2],
+                "target": r[3],
+                "host": r[4],
+                "port": r[5],
+                "proto": r[6],
+                "state": r[7],
+                "service": r[8],
+                "product": r[9],
+                "version": r[10],
+                "extra": r[11],
+            }
+            for r in rows
+        ]
+
+        total_pages = (total + limit - 1) // limit if total else 1
+        return jsonify({"items": items, "total": total, "totalPages": total_pages, "page": page})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# -----------------------------
 # API: export (allowed sources only)
 # -----------------------------
 
@@ -992,6 +1125,9 @@ def list_alerts():
     source = request.args.get("source")
     q = request.args.get("q")
 
+    include_internal = request.args.get("include_internal", "1")
+    include_internal = str(include_internal).strip().lower() not in {"0", "false", "no", "off"}
+
     where = []
     params = {}
 
@@ -1010,6 +1146,10 @@ def list_alerts():
     if q:
         where.append("(title ILIKE %(q)s OR description ILIKE %(q)s)")
         params["q"] = f"%{q}%"
+
+    # Optional: hide internal/loopback demo traffic
+    if not include_internal:
+        where.append("(ip_address IS NULL OR ip_address NOT IN ('127.0.0.1', '::1'))")
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -1049,6 +1189,7 @@ def get_alert(alert_id: int):
     conn = get_db_connection()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # 1) alert row
             cur.execute("""
                 SELECT id, created_at, source, priority, title, description,
                        user_name, ip_address, file_target, status
@@ -1059,19 +1200,139 @@ def get_alert(alert_id: int):
             if not alert:
                 return jsonify({"error": "Alert not found"}), 404
 
-            # linked logs (your unified table)
+            # 2) links (all types)
             cur.execute("""
-                SELECT l.id, l.log_time, l.source, l.message, l.filename, l.agent_name
-                FROM alert_log_links a
-                JOIN logs l ON l.id = a.log_id
-                WHERE a.alert_id = %s
-                ORDER BY l.log_time DESC
+                SELECT log_type, log_id
+                FROM alert_log_links
+                WHERE alert_id = %s
+                ORDER BY id ASC
             """, (alert_id,))
-            linked_logs = cur.fetchall()
+            links = cur.fetchall()
 
-        return jsonify({"alert": alert, "linked_logs": linked_logs})
+            ids_by_type = {}
+            for row in links:
+                ids_by_type.setdefault(row["log_type"], []).append(row["log_id"])
+
+            linked_items = []
+
+            def add_item(log_type: str, time_val, source_val, message_val, extra=None):
+                item = {
+                    "log_type": log_type,
+                    "time": _format_dt(time_val),
+                    "source": source_val or "",
+                    "message": message_val or "",
+                }
+                if extra:
+                    item.update(extra)
+                linked_items.append(item)
+
+            # 3) logs (Task 8 safety)
+            if ids_by_type.get("logs"):
+                allowed_where = allowed_logs_where_sql("l")
+                allowed_params = list(allowed_logs_where_params())
+
+                cur.execute(
+                    f"""
+                    SELECT l.id, l.log_time, l.source, l.message, l.agent_name
+                    FROM logs l
+                    WHERE l.id = ANY(%s)
+                      AND {allowed_where}
+                    ORDER BY l.log_time DESC
+                    """,
+                    (ids_by_type["logs"], *allowed_params),
+                )
+                for r in cur.fetchall():
+                    add_item(
+                        "logs",
+                        r["log_time"],
+                        r["source"],
+                        r["message"],
+                        {"id": r["id"], "agent_name": r.get("agent_name") or ""},
+                    )
+
+            # 4) ftp_events
+            if ids_by_type.get("ftp_events"):
+                cur.execute(
+                    """
+                    SELECT id, event_time, ip, username, action, file_target, raw
+                    FROM ftp_events
+                    WHERE id = ANY(%s)
+                    ORDER BY event_time DESC
+                    """,
+                    (ids_by_type["ftp_events"],),
+                )
+                for r in cur.fetchall():
+                    msg = f"{r.get('action') or ''} user={r.get('username') or ''} ip={r.get('ip') or ''} target={r.get('file_target') or ''}"
+                    add_item(
+                        "ftp_events",
+                        r["event_time"],
+                        r.get("ip") or "",
+                        msg.strip(),
+                        {"id": r["id"], "raw": r.get("raw") or "", "action": r.get("action") or ""},
+                    )
+
+            # 5) ssh_events
+            if ids_by_type.get("ssh_events"):
+                cur.execute(
+                    """
+                    SELECT id, event_time, ip, username, event_type, outcome, auth_method, raw
+                    FROM ssh_events
+                    WHERE id = ANY(%s)
+                    ORDER BY event_time DESC
+                    """,
+                    (ids_by_type["ssh_events"],),
+                )
+                for r in cur.fetchall():
+                    msg = f"{r.get('event_type')} outcome={r.get('outcome')} user={r.get('username') or ''} ip={r.get('ip') or ''}"
+                    add_item(
+                        "ssh_events",
+                        r["event_time"],
+                        r.get("ip") or "",
+                        msg.strip(),
+                        {"id": r["id"], "raw": r.get("raw") or "", "auth_method": r.get("auth_method") or ""},
+                    )
+
+            # 6) nmap_findings
+            if ids_by_type.get("nmap_findings"):
+                cur.execute(
+                    """
+                    SELECT id, scan_time, agent_name, target, host, port, proto, state, service, product, version, extra
+                    FROM nmap_findings
+                    WHERE id = ANY(%s)
+                    ORDER BY scan_time DESC, port ASC
+                    """,
+                    (ids_by_type["nmap_findings"],),
+                )
+                for r in cur.fetchall():
+                    msg = (
+                        f"host={r.get('host')}, port={r.get('port')}/{r.get('proto')}, "
+                        f"target={r.get('target')}, state={r.get('state')}, service={r.get('service')}"
+                    )
+                    add_item(
+                        "nmap_findings",
+                        r["scan_time"],
+                        r.get("host") or "",
+                        msg,
+                        {"id": r["id"], "port": r.get("port"), "proto": r.get("proto"),
+                         "state": r.get("state"), "service": r.get("service")},
+                    )
+
+            # Backwards-compatible "linked_logs" (logs table only)
+            linked_logs = []
+            for it in linked_items:
+                if it["log_type"] == "logs":
+                    linked_logs.append({
+                        "id": it.get("id"),
+                        "log_time": it.get("time"),
+                        "source": it.get("source"),
+                        "message": it.get("message"),
+                        "agent_name": it.get("agent_name"),
+                    })
+
+            return jsonify({"alert": alert, "linked_logs": linked_logs, "linked_items": linked_items})
     finally:
         conn.close()
+
 
 @app.patch("/api/alerts/<int:alert_id>")
 def update_alert_status(alert_id: int):
@@ -1101,7 +1362,8 @@ def update_alert_status(alert_id: int):
 @app.get("/api/alerts/<int:alert_id>/export_csv")
 def export_alert_logs_csv(alert_id: int):
     """
-    Export the linked raw log rows for this alert as CSV.
+    Export linked items for this alert as CSV (supports logs/ssh_events/ftp_events/nmap_findings).
+    Keeps Task 8 safety when exporting logs.
     """
     try:
         conn = get_db_connection()
@@ -1114,43 +1376,119 @@ def export_alert_logs_csv(alert_id: int):
             conn.close()
             return jsonify({"error": "Alert not found"}), 404
 
-        # IMPORTANT: keep Task 8 safety (allowed sources only)
-        allowed_where = allowed_logs_where_sql("l")
-        allowed_params = list(allowed_logs_where_params())
+        cur.execute("""
+            SELECT log_type, log_id
+            FROM alert_log_links
+            WHERE alert_id = %s
+            ORDER BY id ASC
+        """, (alert_id,))
+        links = cur.fetchall()
 
-        cur.execute(
-            f"""
-            SELECT l.id, l.log_time, l.agent_name, l.source, l.message
-            FROM alert_log_links a
-            JOIN logs l ON l.id = a.log_id
-            WHERE a.alert_id = %s
-              AND {allowed_where}
-            ORDER BY l.log_time DESC
-            """,
-            [alert_id] + allowed_params
-        )
-        rows = cur.fetchall()
+        ids_by_type = {}
+        for row in links:
+            ids_by_type.setdefault(row["log_type"], []).append(row["log_id"])
+
+        rows_out = []
+
+        # logs (Task 8 safety)
+        if ids_by_type.get("logs"):
+            allowed_where = allowed_logs_where_sql("l")
+            allowed_params = list(allowed_logs_where_params())
+            cur.execute(
+                f"""
+                SELECT l.id, l.log_time AS time, l.source, l.message, l.agent_name
+                FROM logs l
+                WHERE l.id = ANY(%s)
+                  AND {allowed_where}
+                ORDER BY l.log_time DESC
+                """,
+                (ids_by_type["logs"], *allowed_params),
+            )
+            for r in cur.fetchall():
+                rows_out.append({
+                    "log_type": "logs",
+                    "id": r["id"],
+                    "time": _format_dt(r["time"]),
+                    "source": r["source"],
+                    "message": r["message"],
+                })
+
+        # ftp_events
+        if ids_by_type.get("ftp_events"):
+            cur.execute(
+                """
+                SELECT id, event_time AS time, ip AS source, raw AS message
+                FROM ftp_events
+                WHERE id = ANY(%s)
+                ORDER BY event_time DESC
+                """,
+                (ids_by_type["ftp_events"],),
+            )
+            for r in cur.fetchall():
+                rows_out.append({
+                    "log_type": "ftp_events",
+                    "id": r["id"],
+                    "time": _format_dt(r["time"]),
+                    "source": r["source"] or "",
+                    "message": r["message"] or "",
+                })
+
+        # ssh_events
+        if ids_by_type.get("ssh_events"):
+            cur.execute(
+                """
+                SELECT id, event_time AS time, ip AS source, raw AS message
+                FROM ssh_events
+                WHERE id = ANY(%s)
+                ORDER BY event_time DESC
+                """,
+                (ids_by_type["ssh_events"],),
+            )
+            for r in cur.fetchall():
+                rows_out.append({
+                    "log_type": "ssh_events",
+                    "id": r["id"],
+                    "time": _format_dt(r["time"]),
+                    "source": r["source"] or "",
+                    "message": r["message"] or "",
+                })
+
+        # nmap_findings
+        if ids_by_type.get("nmap_findings"):
+            cur.execute(
+                """
+                SELECT id,
+                       scan_time AS time,
+                       host AS source,
+                       ('target=' || target || ' host=' || host || ' port=' || port || '/' || proto || ' state=' || state || ' service=' || COALESCE(service,'')) AS message
+                FROM nmap_findings
+                WHERE id = ANY(%s)
+                ORDER BY scan_time DESC, port ASC
+                """,
+                (ids_by_type["nmap_findings"],),
+            )
+            for r in cur.fetchall():
+                rows_out.append({
+                    "log_type": "nmap_findings",
+                    "id": r["id"],
+                    "time": _format_dt(r["time"]),
+                    "source": r["source"] or "",
+                    "message": r["message"] or "",
+                })
 
         cur.close()
         conn.close()
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["id", "log_time", "agent_name", "source", "message"])
-
-        for r in rows:
-            writer.writerow([
-                r["id"],
-                _format_dt(r["log_time"]),
-                r.get("agent_name") or "",
-                r.get("source") or "",
-                r.get("message") or "",
-            ])
+        writer.writerow(["log_type", "id", "time", "source", "message"])
+        for r in rows_out:
+            writer.writerow([r["log_type"], r["id"], r["time"], r["source"], r["message"]])
 
         csv_data = output.getvalue()
         output.close()
 
-        filename = f"alert_{alert_id}_logs.csv"
+        filename = f"alert_{alert_id}_linked_items.csv"
         return Response(
             csv_data,
             mimetype="text/csv",

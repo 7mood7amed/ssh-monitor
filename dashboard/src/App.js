@@ -8,6 +8,7 @@ import SshLogsPage from "./pages/SshLogsPage";
 import WebTrafficPage from "./pages/WebTrafficPage";
 import FtpLogsPage from "./pages/FtpLogsPage";
 import AlertsPage from "./pages/AlertsPage";
+import NmapPage from "./pages/NmapPage";
 
 import "./App.css";
 
@@ -35,6 +36,7 @@ function App() {
           <Route path="/web" element={<WebTrafficPage refreshTrigger={refreshTrigger} />} />
           <Route path="/ftp" element={<FtpLogsPage refreshTrigger={refreshTrigger} />} />
           <Route path="/alerts" element={<AlertsPage refreshTrigger={refreshTrigger} />} />
+          <Route path="/nmap" element={<NmapPage />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
