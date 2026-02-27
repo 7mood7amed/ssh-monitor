@@ -267,31 +267,72 @@ def _apply_time_range(where: List[str], params: List[Any], col: str, dt_from: Op
 
 @app.route("/api/agents", methods=["GET"])
 def get_agents():
+    """
+    Returns only the collector agents:
+      SSH / FTP / APACHE / NMAP
+
+    Status is computed from last_heartbeat (we ignore agent_status.status column).
+    Thresholds are slightly different:
+      - SSH/FTP/APACHE: active <= 5 min, warning <= 15 min
+      - NMAP: active <= 15 min, warning <= 60 min
+    """
     try:
         conn = get_db_connection()
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Only these agents should appear in the dashboard
+        allowed_agents = ["SSH", "FTP", "APACHE", "NMAP"]
+
         cur.execute(
             """
-            SELECT
-                agent_name,
-                last_heartbeat,
-                CASE
-                    WHEN last_heartbeat >= NOW() - INTERVAL '2 minutes' THEN 'active'
-                    WHEN last_heartbeat >= NOW() - INTERVAL '10 minutes' THEN 'warning'
-                    ELSE 'inactive'
-                END AS status
-            FROM agent_status
+            SELECT agent_name, last_heartbeat
+            FROM public.agent_status
+            WHERE agent_name = ANY(%s)
             ORDER BY agent_name;
-            """
+            """,
+            (allowed_agents,),
         )
         rows = cur.fetchall()
         cur.close()
         conn.close()
 
-        agents = [
-            {"agent_name": r[0], "last_heartbeat": _format_dt(r[1]), "status": r[2]}
-            for r in rows
-        ]
+        now = datetime.utcnow()
+
+        def compute_status(agent: str, last_hb: Optional[datetime]) -> str:
+            if not last_hb:
+                return "inactive"
+
+            # last_hb is naive timestamp from postgres; treat it as server-local naive.
+            # We compare using naive UTC now; for dashboard status this is fine
+            # because we're only measuring "age".
+            age = now - last_hb
+
+            if agent == "NMAP":
+                if age <= timedelta(minutes=15):
+                    return "active"
+                if age <= timedelta(minutes=60):
+                    return "warning"
+                return "inactive"
+
+            # SSH/FTP/APACHE
+            if age <= timedelta(minutes=5):
+                return "active"
+            if age <= timedelta(minutes=15):
+                return "warning"
+            return "inactive"
+
+        agents = []
+        for r in rows:
+            agent = r["agent_name"]
+            hb = r["last_heartbeat"]
+            agents.append(
+                {
+                    "agent_name": agent,
+                    "last_heartbeat": _format_dt(hb),
+                    "status": compute_status(agent, hb),
+                }
+            )
+
         return jsonify(agents)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -793,6 +834,18 @@ def get_ftp_logs():
       { logs: [{timestamp,user,ip,action,file_target,raw}], total, totalPages, page }
     """
     try:
+        # Enforce allowed FTP actions only (hide noisy "OTHER" etc.)
+        ALLOWED_FTP_ACTIONS = [
+            "LOGIN_SUCCESS",
+            "LOGIN_FAIL",
+            "UPLOAD",
+            "DOWNLOAD",
+            "DELETE",
+            "RENAME",
+            "MKDIR",
+            "RMDIR",
+        ]
+
         page = _safe_int(request.args.get("page"), 1, min_value=1)
         limit = _safe_int(request.args.get("limit"), 50, min_value=1, max_value=200)
         offset = (page - 1) * limit
@@ -812,8 +865,9 @@ def get_ftp_logs():
         if order not in {"asc", "desc"}:
             order = "desc"
 
-        where = ["1=1"]
-        params: List[Any] = []
+        # ALWAYS restrict to allowed actions (so "OTHER" never appears)
+        where = ["action = ANY(%s)"]
+        params: List[Any] = [ALLOWED_FTP_ACTIONS]
 
         if q:
             where.append("""
@@ -886,7 +940,7 @@ def get_ftp_logs():
 
 
 # -----------------------------
-# API: nmap logs 
+# API: nmap logs
 # -----------------------------
 
 @app.route("/api/nmap_findings", methods=["GET"])
@@ -1111,7 +1165,7 @@ def home():
 
 
 # -----------------------------
-# alerts 
+# alerts
 # -----------------------------
 
 @app.get("/api/alerts")
