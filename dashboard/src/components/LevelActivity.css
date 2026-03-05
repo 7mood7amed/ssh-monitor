@@ -1,0 +1,76 @@
+
+.la-card {
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  padding: 18px 18px 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  margin: 18px auto;
+  width: 90%;
+  max-width: 1100px;
+}
+
+.la-title {
+  font-weight: 700;
+  font-size: 18px;
+  margin-bottom: 12px;
+  color: #e2e8f0;
+}
+
+.la-row {
+  display: flex;
+  gap: 26px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.la-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 130px;
+}
+
+.la-label {
+  font-size: 14px;
+  color: rgba(226, 232, 240, 0.85);
+  font-weight: 600;
+}
+
+.la-ring {
+  width: 88px;
+  height: 88px;
+  border-radius: 999px;
+
+  /* Grey base ring */
+  background: conic-gradient(var(--accent) var(--deg), rgba(148, 163, 184, 0.22) 0);
+  display: grid;
+  place-items: center;
+}
+
+.la-center {
+  width: 70px;
+  height: 70px;
+  border-radius: 999px;
+
+
+  background: rgba(2, 6, 23, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  display: grid;
+  place-items: center;
+}
+
+.la-value {
+  font-weight: 800;
+  font-size: 15px;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+/* Severity colors */
+
+.la-critical { --accent: #ef4444; } /* RED */
+.la-high     { --accent: #f97316; } /* ORANGE */
+.la-medium   { --accent: #facc15; } /* YELLOW */
+.la-low      { --accent: #22c55e; } /* GREEN */

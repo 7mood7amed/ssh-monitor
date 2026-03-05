@@ -9,20 +9,13 @@ VSFTPD_PREFIX = "/var/log/vsftpd.log"
 
 # Timestamp / user / ip
 TS_RE = re.compile(r"^(?P<dow>\w+)\s+(?P<mon>\w+)\s+(?P<day>\d+)\s+(?P<time>\d+:\d+:\d+:\d+)?")
-# (kept parse_ts below; we also use db log_time primarily)
 
 IP_RE = re.compile(r'Client\s+"::ffff:(?P<ip>[\d.]+)"')
 
 # Match the *real* vsftpd event formats we want to store.
-# Examples:
-#   [hero] OK LOGIN: Client "::ffff:192.168.56.1"
-#   [hero] FAIL LOGIN: Client "::ffff:127.0.0.1"
-#   [hero] OK UPLOAD: Client "::ffff:192.168.56.1", "/upload/file.txt", ...
-#   [hero] OK DOWNLOAD: Client "::ffff:192.168.56.1", "/upload/file.txt", ...
-#   [hero] FAIL DELETE: Client "::ffff:192.168.56.1", "/file.txt"
 EVENT_RE = re.compile(r"\]\s+(?P<status>OK|FAIL)\s+(?P<verb>[A-Z_]+):", re.IGNORECASE)
 
-# Only keep these event types (what you asked for)
+# Only keep these event types
 ALLOWED_ACTIONS = {
     "LOGIN_SUCCESS",
     "LOGIN_FAIL",
@@ -87,17 +80,22 @@ def parse_ts(raw: str):
     )
 
 def parse_username(msg: str):
-    # vsftpd prefix contains multiple [..] blocks: [pid ...] [hero]
+    # Best-case: [pid 123] [hero]
+    m = re.search(r"\[pid\s+\d+\]\s+\[([^\]]+)\]", msg, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Fallback: scan brackets, ignore pid + severity tags
     brackets = re.findall(r"\[([^\]]+)\]", msg)
-    if not brackets:
-        return None
-    for b in reversed(brackets):
+    for b in brackets:
         b2 = b.strip()
-        if b2.lower().startswith("pid "):
+        low = b2.lower()
+        if low.startswith("pid "):
+            continue
+        if low.startswith("severity="):
             continue
         return b2
     return None
-
 def detect_action_and_target(msg: str):
     """
     Returns (action, file_target) or (None, None) if message is not a real event line.

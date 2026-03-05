@@ -1,5 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 import "./ChartPanel.css";
 import API_BASE_URL from "../config";
 
@@ -23,14 +31,38 @@ const ChartPanel = ({ refreshTrigger }) => {
   return (
     <section className="chart-section">
       <h2>📊 Log Volume Over Time</h2>
+
       <div className="chart-card">
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#ddd" />
-            <XAxis dataKey="time" stroke="#555" />
-            <YAxis />
+
+            {/* Grid styling for dark dashboard */}
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="rgba(148, 163, 184, 0.35)"
+            />
+
+            {/* Axis styling */}
+            <XAxis
+              dataKey="time"
+              stroke="rgba(226, 232, 240, 0.65)"
+            />
+
+            <YAxis
+              stroke="rgba(226, 232, 240, 0.65)"
+            />
+
             <Tooltip />
-            <Line type="monotone" dataKey="logs" stroke="#004c7f" strokeWidth={2} dot={{ r: 3 }} />
+
+            {/* Main chart line */}
+            <Line
+              type="monotone"
+              dataKey="logs"
+              stroke="#38bdf8"
+              strokeWidth={2}
+              dot={{ r: 3 }}
+            />
+
           </LineChart>
         </ResponsiveContainer>
       </div>

@@ -4,13 +4,8 @@
 # Task 8: store only useful logs (SSH auth + Apache login/admin/suspicious)
 # Cursor-based ingestion (NO hash) + SSH event parsing
 # + FTP: ingest /var/log/vsftpd.log into logs table
-# + FTP brute-force rule: >=5 real auth failures from same IP within 60s -> SEVERITY=HIGH (tagged in message)
+# + FTP brute-force rule: >=5 real auth failures from same IP within 60s -> SEVERITY=HIGH
 #
-# FIXES INCLUDED:
-# ✅ FTP uses REAL vsftpd timestamp (not datetime.now)
-# ✅ FTP severity always uppercase (LOW/HIGH)
-# ✅ Optional FTP noise filter (default ON: keep only useful FTP events)
-# =========================================
 
 from __future__ import annotations
 
@@ -22,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Iterable, Optional, Tuple
 from collections import defaultdict
+from functools import lru_cache
 
 import psycopg2
 
@@ -139,6 +135,73 @@ def _norm_user(u: Optional[str]) -> Optional[str]:
     if "(" in u:
         u = u.split("(", 1)[0].strip()
     return u or None
+
+
+# ---------------------------
+# Severity helpers (NEW)
+# ---------------------------
+
+SEV_LOW = "LOW"
+SEV_MED = "MEDIUM"
+SEV_HIGH = "HIGH"
+SEV_CRIT = "CRITICAL"
+
+def clamp_sev(sev: str) -> str:
+    sev = (sev or "").upper().strip()
+    return sev if sev in {SEV_LOW, SEV_MED, SEV_HIGH, SEV_CRIT} else SEV_LOW
+
+
+def severity_from_auth_msg(msg_norm: str) -> str:
+    """
+    Severity for raw SSH/auth.log lines you already decided to keep.
+    """
+    m = (msg_norm or "").lower()
+
+    # Strongest signals first
+    if "maximum authentication attempts exceeded" in m:
+        return SEV_HIGH
+    if "invalid user" in m:
+        return SEV_MED
+    if "failed password" in m or "failed publickey" in m or "authentication failure" in m:
+        return SEV_MED
+    if "accepted" in m:
+        return SEV_LOW
+
+    return SEV_LOW
+
+
+# Apache access severity: you only store "useful/suspicious" access lines
+_SUSPICIOUS_UA = ("sqlmap", "nikto", "nmap", "masscan", "python-requests")
+_SUSPICIOUS_URL_NEEDLES = (
+    "../", "%2e%2e", "%2f",                    # traversal
+    "union select", " or 1=1", "%27", "' or",   # sqli-ish
+    "/wp-login.php", "/wp-admin", "/phpmyadmin", "/phppgadmin",
+)
+
+def severity_from_apache_access(parsed: dict) -> str:
+    url_l = (parsed.get("url") or "").lower()
+    ua_l = (parsed.get("ua") or "").lower()
+    status = int(parsed.get("status") or 0)
+
+    # Clear exploit/probing signals
+    if any(n in url_l for n in _SUSPICIOUS_URL_NEEDLES) or any(u in ua_l for u in _SUSPICIOUS_UA):
+        return SEV_HIGH
+
+    # If it was kept due to suspicious status codes (auth errors, 404 probing, throttling, server errors)
+    if status in {401, 403, 404, 429} or (500 <= status <= 599):
+        return SEV_MED
+
+    # Kept due to sensitive keywords (/admin, /login, etc.)
+    return SEV_MED
+
+
+def severity_from_apache_error(line: str) -> str:
+    m = (line or "").lower()
+    if "[emerg]" in m or "[alert]" in m or "[crit]" in m:
+        return SEV_CRIT
+    if "[error]" in m:
+        return SEV_HIGH
+    return SEV_MED
 
 
 # ---------------------------
@@ -570,12 +633,43 @@ def compute_start(prev: CursorState, current_inode: Optional[int], current_size:
 
     return min(prev.byte_offset, current_size)
 
+@lru_cache(maxsize=128)
+def _table_has_column_cached(dbname: str, host: str, port: int, user: str, table: str, column: str) -> bool:
+    """
+    Cacheable schema probe. Uses a fresh connection to avoid cursor lifetime issues.
+    """
+    try:
+        conn = psycopg2.connect(dbname=dbname, user=user, password=DB_PASS, host=host, port=port)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = %s
+                      AND column_name = %s
+                    LIMIT 1;
+                    """,
+                    (table, column),
+                )
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+def table_has_column(table: str, column: str) -> bool:
+    return _table_has_column_cached(DB_NAME, DB_HOST, DB_PORT, DB_USER, table, column)
+
+
 def insert_log_row(
     conn,
     file_path: str,
     log_time: datetime,
     message: str,
     agent_name: Optional[str] = None,
+    severity: str = SEV_LOW,
 ) -> Optional[int]:
 
     agent = agent_name or AGENT_NAME
@@ -586,37 +680,68 @@ def insert_log_row(
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO public.logs (filename, log_time, source, message, agent_name)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO public.logs (filename, log_time, source, message, agent_name, severity)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id;
             """,
-            (os.path.basename(file_path), log_time, file_path, message, agent),
+            (os.path.basename(file_path), log_time, file_path, message, agent, clamp_sev(severity)),
         )
         return int(cur.fetchone()[0])
 
-def insert_ssh_event(conn, log_id: Optional[int], event_time: datetime, ev: dict, raw: str) -> None:
+def insert_ssh_event(conn, log_id: Optional[int], event_time: datetime, ev: dict, raw: str, severity: str) -> None:
+    """
+    Backward-compatible:
+    - If ssh_events.severity exists -> insert it.
+    - Else -> use original insert.
+    """
+    sev = clamp_sev(severity)
+
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO public.ssh_events
-              (log_id, agent_name, event_time, event_type, outcome, auth_method, username, ip, port, raw)
-            VALUES
-              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (log_id) DO NOTHING;
-            """,
-            (
-                log_id,
-                AGENT_NAME,
-                event_time,
-                ev["event_type"],
-                ev.get("outcome"),
-                ev.get("auth_method"),
-                ev.get("username"),
-                ev.get("ip"),
-                ev.get("port"),
-                raw,
-            ),
-        )
+        if table_has_column("ssh_events", "severity"):
+            cur.execute(
+                """
+                INSERT INTO public.ssh_events
+                  (log_id, agent_name, event_time, event_type, outcome, auth_method, username, ip, port, raw, severity)
+                VALUES
+                  (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (log_id) DO NOTHING;
+                """,
+                (
+                    log_id,
+                    AGENT_NAME,
+                    event_time,
+                    ev["event_type"],
+                    ev.get("outcome"),
+                    ev.get("auth_method"),
+                    ev.get("username"),
+                    ev.get("ip"),
+                    ev.get("port"),
+                    raw,
+                    sev,
+                ),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO public.ssh_events
+                  (log_id, agent_name, event_time, event_type, outcome, auth_method, username, ip, port, raw)
+                VALUES
+                  (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (log_id) DO NOTHING;
+                """,
+                (
+                    log_id,
+                    AGENT_NAME,
+                    event_time,
+                    ev["event_type"],
+                    ev.get("outcome"),
+                    ev.get("auth_method"),
+                    ev.get("username"),
+                    ev.get("ip"),
+                    ev.get("port"),
+                    raw,
+                ),
+            )
 
 def iter_watch_files() -> Iterable[str]:
     seen = set()
@@ -647,7 +772,7 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
     inserted = 0
     dropped = 0
     base = os.path.basename(path)
-    upsert_agent_heartbeat(conn, agent_for_path(path))# heartbeat even if no new lines are inserted
+    upsert_agent_heartbeat(conn, agent_for_path(path))  # heartbeat even if no new lines are inserted
 
     try:
         with open(path, "r", errors="ignore") as f:
@@ -664,10 +789,13 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                         dropped += 1
                         continue
 
-                    log_id = insert_log_row(conn, path, dt, msg_norm, agent_name="SSH")
+                    sev = severity_from_auth_msg(msg_norm)
+                    log_id = insert_log_row(conn, path, dt, msg_norm, agent_name="SSH", severity=sev)
+
                     ev = parse_ssh_event(msg_norm)
                     if ev:
-                        insert_ssh_event(conn, log_id, dt, ev, msg_norm)
+                        insert_ssh_event(conn, log_id, dt, ev, msg_norm, severity=sev)
+
                     inserted += 1
                     continue
 
@@ -680,7 +808,10 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     if not should_store_apache_access(parsed):
                         dropped += 1
                         continue
-                    insert_log_row(conn, path, parsed["dt"], parsed["raw"], agent_name="APACHE")
+
+                    sev = severity_from_apache_access(parsed)
+                    insert_log_row(conn, path, parsed["dt"], parsed["raw"], agent_name="APACHE", severity=sev)
+
                     inserted += 1
                     continue
 
@@ -707,7 +838,7 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     ip = ip_match.group(1) if ip_match else "unknown"
 
                     # Always uppercase severity (FIX)
-                    severity = "LOW"
+                    severity = SEV_LOW
 
                     # Count only real auth failures (NOT "Please login with USER and PASS")
                     is_fail = (
@@ -725,7 +856,9 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                         ftp_fail_tracker[ip] = [t for t in ftp_fail_tracker[ip] if t > one_minute_ago]
 
                         if len(ftp_fail_tracker[ip]) >= 5:
-                            severity = "HIGH"
+                            severity = SEV_HIGH
+                        else:
+                            severity = SEV_MED
 
                     msg_out = f"{msg} [SEVERITY={severity}]"
 
@@ -735,6 +868,7 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                         dt,
                         msg_out,
                         agent_name="FTP",
+                        severity=severity,
                     )
 
                     inserted += 1
@@ -749,7 +883,12 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     if not _RE_APACHE_ERROR_SEV.search(msg):
                         dropped += 1
                         continue
-                    insert_log_row(conn, path, datetime.now().replace(microsecond=0), msg, agent_name="APACHE")
+
+                    dt = datetime.now().replace(microsecond=0)
+                    sev = severity_from_apache_error(msg)
+
+                    insert_log_row(conn, path, dt, msg, agent_name="APACHE", severity=sev)
+
                     inserted += 1
                     continue
 

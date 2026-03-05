@@ -1,47 +1,63 @@
+/* Metrics.css */
+
 .metrics-container {
   display: flex;
   justify-content: center;
   align-items: center;
   gap: 1.5rem;
   flex-wrap: wrap;
+
+  /* Align with other dashboard cards */
   width: 90%;
-  margin: 1.5rem auto;
+  max-width: 1100px;
+  margin: 24px auto;
 }
 
-.metric-card {
-  background: #ffffff;
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  padding: 20px 30px;
+/* Metric Card */
+.metrics-container .metric-card {
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+
+  padding: 20px 28px;
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 14px;
+
   width: 270px;
-  border-top: 6px solid #004c7f;
   transition: all 0.25s ease;
+
+  color: #e2e8f0;
+
+  /* colored top border controlled from JS */
+  border-top: 6px solid #38bdf8;
 }
 
-.metric-card:hover {
+.metrics-container .metric-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
 }
 
-.metric-icon {
-  font-size: 2rem;
-  background: #f2f6fb;
-  padding: 10px;
-  border-radius: 8px;
+/* icon box */
+.metrics-container .metric-icon {
+  font-size: 1.8rem;
+  background: rgba(148, 163, 184, 0.08);
+  padding: 10px 12px;
+  border-radius: 10px;
 }
 
-.metric-info h3 {
+/* metric number */
+.metrics-container .metric-info h3 {
   margin: 0;
-  color: #003366;
-  font-size: 1.5rem;
-  font-weight: 700;
+  color: #e2e8f0;
+  font-size: 1.6rem;
+  font-weight: 800;
 }
 
-.metric-info p {
+/* metric label */
+.metrics-container .metric-info p {
   margin: 0;
-  font-size: 0.95rem;
-  color: #555;
+  font-size: 0.9rem;
+  color: rgba(226, 232, 240, 0.65);
 }

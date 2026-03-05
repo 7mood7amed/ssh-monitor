@@ -1,197 +1,263 @@
 import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
-import "../components/Table.css";
+import "../components/FtpLogs.css";
+
+function SeverityBadge({ severity }) {
+  const s = String(severity || "low").toLowerCase();
+  const label = s.toUpperCase();
+
+  const style = {
+    display: "inline-block",
+    padding: "2px 10px",
+    borderRadius: "999px",
+    fontSize: "12px",
+    fontWeight: 700,
+    letterSpacing: "0.4px",
+    textTransform: "uppercase",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background:
+      s === "critical"
+        ? "rgba(239,68,68,0.25)"
+        : s === "high"
+        ? "rgba(249,115,22,0.22)"
+        : s === "medium"
+        ? "rgba(234,179,8,0.20)"
+        : "rgba(34,197,94,0.18)",
+  };
+
+  return <span style={style}>{label}</span>;
+}
+
+const LIMIT_OPTIONS = [20, 50, 100];
 
 export default function NmapPage() {
-    const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState([]);
 
-    // Filters
-    const [q, setQ] = useState("");
-    const [host, setHost] = useState("");
-    const [port, setPort] = useState("");
-    const [state, setState] = useState("All");
-    const [service, setService] = useState("All");
+  // Filters
+  const [q, setQ] = useState("");
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("");
+  const [state, setState] = useState("All");
+  const [service, setService] = useState("All");
+  const [severity, setSeverity] = useState("All"); // frontend-only filter
 
-    // Pagination
-    const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(50);
-    const [total, setTotal] = useState(0);
-    const [totalPages, setTotalPages] = useState(1);
+  // Pagination
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
-    // Reset to page 1 when filters change
-    useEffect(() => {
-        setPage(1);
-    }, [q, host, port, state, service]);
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [q, host, port, state, service, severity, pageSize]);
 
-    const url = useMemo(() => {
-        const params = new URLSearchParams();
-        params.set("page", String(page));
-        params.set("limit", String(pageSize));
+  const url = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("limit", String(pageSize));
 
-        if (q.trim()) params.set("q", q.trim());
-        if (host.trim()) params.set("host", host.trim());
-        if (port.trim()) params.set("port", port.trim());
-        if (state !== "All") params.set("state", state);
-        if (service !== "All") params.set("service", service);
+    if (q.trim()) params.set("q", q.trim());
+    if (host.trim()) params.set("host", host.trim());
+    if (port.trim()) params.set("port", port.trim());
+    if (state !== "All") params.set("state", state);
+    if (service !== "All") params.set("service", service);
 
-        return `${API_BASE_URL}/api/nmap_findings?${params.toString()}`;
-    }, [page, pageSize, q, host, port, state, service]);
 
-    useEffect(() => {
-        const fetchFindings = async () => {
-            try {
-                const res = await fetch(url);
-                const data = await res.json();
+    return `${API_BASE_URL}/api/nmap_findings?${params.toString()}`;
+  }, [page, pageSize, q, host, port, state, service]);
 
-                setRows(data.items || []);
-                setTotal(data.total || 0);
-                setTotalPages(data.totalPages || 1);
+  useEffect(() => {
+    const fetchFindings = async () => {
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
 
-                // Safety: if filters reduce totalPages below current page
-                if ((data.totalPages || 1) < page) setPage(1);
-            } catch (e) {
-                console.error("Error fetching nmap findings:", e);
-            }
-        };
+        setRows(Array.isArray(data.items) ? data.items : []);
+        setTotal(data.total || 0);
+        setTotalPages(data.totalPages || 1);
 
-        fetchFindings();
-        const interval = setInterval(fetchFindings, 15000); // refresh every 15s
-        return () => clearInterval(interval);
-    }, [url, page]);
-
-    const clear = () => {
-        setQ("");
-        setHost("");
-        setPort("");
-        setState("All");
-        setService("All");
+        if ((data.totalPages || 1) < page) setPage(1);
+      } catch (e) {
+        console.error("Error fetching nmap findings:", e);
+      }
     };
 
-    return (
-        <div className="table-card">
-            <h2 className="table-title">🧭 NMAP Findings (Port Scan Results)</h2>
+    fetchFindings();
+    const interval = setInterval(fetchFindings, 15000);
+    return () => clearInterval(interval);
+  }, [url, page]);
 
-            <div className="filter-bar">
-                <input
-                    placeholder="Search target/host/service..."
-                    value={q}
-                    onChange={(e) => setQ(e.target.value)}
-                />
+  const clear = () => {
+    setQ("");
+    setHost("");
+    setPort("");
+    setState("All");
+    setService("All");
+    setSeverity("All");
+    setPage(1);
+  };
 
-                <input
-                    placeholder="Host (e.g. 127.0.0.1)"
-                    value={host}
-                    onChange={(e) => setHost(e.target.value)}
-                />
+  // Frontend severity filter
+  const filteredRows = useMemo(() => {
+    if (severity === "All") return rows;
+    const sv = severity.toLowerCase();
+    return rows.filter((r) => String(r.severity || "").toLowerCase() === sv);
+  }, [rows, severity]);
 
-                <input
-                    placeholder="Port (e.g. 22)"
-                    value={port}
-                    onChange={(e) => setPort(e.target.value)}
-                />
+  const handlePrev = () => setPage((p) => Math.max(p - 1, 1));
+  const handleNext = () => setPage((p) => Math.min(p + 1, totalPages || 1));
 
-                <select value={state} onChange={(e) => setState(e.target.value)}>
-                    <option value="All">All States</option>
-                    <option value="open">open</option>
-                    <option value="closed">closed</option>
-                    <option value="filtered">filtered</option>
-                </select>
+  return (
+    <div className="content">
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h2 className="card-title">🧭 NMAP Findings</h2>
+            <div className="card-subtitle">Port Scan Results (target/host/port/state/service)</div>
+          </div>
 
-                <select value={service} onChange={(e) => setService(e.target.value)}>
-                    <option value="All">All Services</option>
-                    <option value="ssh">ssh</option>
-                    <option value="ftp">ftp</option>
-                    <option value="http">http</option>
-                    <option value="mysql">mysql</option>
-                    <option value="postgresql">postgresql</option>
-                    <option value="upnp">upnp</option>
-                </select>
-
-                <button className="page-btn" type="button" onClick={clear}>
-                    Clear
-                </button>
-
-                <span className="result-count">
-                    Showing <b>{rows.length}</b> of {total} findings (page {page} of{" "}
-                    {totalPages})
-                </span>
-            </div>
-
-            <div className="table-wrapper">
-                <table className="data-table">
-                    <thead>
-                        <tr>
-                            <th>Scan Time</th>
-                            <th>Agent</th>
-                            <th>Target</th>
-                            <th>Host</th>
-                            <th>Port</th>
-                            <th>Proto</th>
-                            <th>State</th>
-                            <th>Service</th>
-                            <th>Extra</th>
-                        </tr>
-                    </thead>
-
-                    <tbody>
-                        {rows.map((r) => (
-                            <tr key={r.id}>
-                                <td className="cell-mono">{r.scan_time}</td>
-                                <td>{r.agent_name}</td>
-                                <td>{r.target}</td>
-                                <td className="cell-mono">{r.host}</td>
-                                <td className="cell-mono">{r.port}</td>
-                                <td>{r.proto}</td>
-                                <td>{r.state}</td>
-                                <td>{r.service}</td>
-                                <td className="cell-truncate" title={r.extra || ""}>
-                                    {r.extra || ""}
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-
-            {rows.length === 0 && <p className="no-results">No NMAP findings yet.</p>}
-
-            <div className="pagination-bar">
-                <button
-                    className="page-btn"
-                    onClick={() => setPage((p) => Math.max(p - 1, 1))}
-                    disabled={page === 1}
-                >
-                    ◀ Prev
-                </button>
-
-                <span className="page-info">
-                    Page <b>{page}</b> of {totalPages}
-                </span>
-
-                <button
-                    className="page-btn"
-                    onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
-                    disabled={page === totalPages || totalPages === 0}
-                >
-                    Next ▶
-                </button>
-
-                <div className="page-size-control">
-                    <span>Show:</span>
-                    <select
-                        value={pageSize}
-                        onChange={(e) => {
-                            setPageSize(Number(e.target.value));
-                            setPage(1);
-                        }}
-                    >
-                        <option value={20}>20</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
-                    </select>
-                    <span>per page</span>
-                </div>
-            </div>
+          
+          <div className="page-size-buttons" role="group" aria-label="Page size">
+            {LIMIT_OPTIONS.map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={n === pageSize ? "pill pill-active" : "pill"}
+                onClick={() => {
+                  setPageSize(n);
+                  setPage(1);
+                }}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
         </div>
-    );
+
+        {/*  Filters row */}
+        <div className="filters-row">
+          <input
+            className="input"
+            placeholder="Search target/host/service..."
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+
+          <input
+            className="input"
+            placeholder="Host (e.g. 127.0.0.1)"
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+          />
+
+          <input
+            className="input"
+            placeholder="Port (e.g. 22)"
+            value={port}
+            onChange={(e) => setPort(e.target.value)}
+          />
+
+          <select className="select" value={state} onChange={(e) => setState(e.target.value)}>
+            <option value="All">All States</option>
+            <option value="open">open</option>
+            <option value="closed">closed</option>
+            <option value="filtered">filtered</option>
+          </select>
+
+          <select className="select" value={service} onChange={(e) => setService(e.target.value)}>
+            <option value="All">All Services</option>
+            <option value="ssh">ssh</option>
+            <option value="ftp">ftp</option>
+            <option value="http">http</option>
+            <option value="mysql">mysql</option>
+            <option value="postgresql">postgresql</option>
+            <option value="upnp">upnp</option>
+          </select>
+
+          <select className="select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
+            <option value="All">All Severity</option>
+            <option value="critical">critical</option>
+            <option value="high">high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+          </select>
+
+          <button className="btn btn-secondary" type="button" onClick={clear}>
+            Clear
+          </button>
+        </div>
+
+        {/*  Meta row */}
+        <div className="meta-row">
+          <div className="meta-left">
+            Showing <b>{filteredRows.length}</b> of <b>{total}</b> results
+          </div>
+          <div className="meta-right">
+            Page <b>{page}</b> / <b>{totalPages}</b>
+          </div>
+        </div>
+
+        {/* Table */}
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: 170 }}>SCAN TIME</th>
+                <th style={{ width: 110 }}>AGENT</th>
+                <th style={{ width: 160 }}>TARGET</th>
+                <th style={{ width: 160 }}>HOST</th>
+                <th style={{ width: 90 }}>PORT</th>
+                <th style={{ width: 80 }}>PROTO</th>
+                <th style={{ width: 110 }}>STATE</th>
+                <th style={{ width: 130 }}>SERVICE</th>
+                <th style={{ width: 140 }}>SEVERITY</th>
+                <th>EXTRA</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {filteredRows.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="empty">
+                    No NMAP findings match your filters.
+                  </td>
+                </tr>
+              ) : (
+                filteredRows.map((r) => (
+                  <tr key={r.id}>
+                    <td className="mono">{r.scan_time}</td>
+                    <td>{r.agent_name}</td>
+                    <td className="mono">{r.target}</td>
+                    <td className="mono">{r.host}</td>
+                    <td className="mono">{r.port}</td>
+                    <td>{r.proto}</td>
+                    <td>{r.state}</td>
+                    <td>{r.service}</td>
+                    <td>
+                      <SeverityBadge severity={r.severity} />
+                    </td>
+                    <td className="mono" title={r.extra || ""}>
+                      {r.extra || ""}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pager */}
+        <div className="pager">
+          <button className="btn btn-secondary" onClick={handlePrev} disabled={page === 1}>
+            Prev
+          </button>
+
+          <button className="btn btn-secondary" onClick={handleNext} disabled={page === totalPages || totalPages === 0}>
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

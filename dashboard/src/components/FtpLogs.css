@@ -1,5 +1,3 @@
-/* dashboard/src/components/FtpLogs.css */
-/* Based on WebTraffic.css style – same layout/cards/table/buttons */
 
 .content {
   padding: 24px;
@@ -36,17 +34,16 @@
   color: rgba(226, 232, 240, 0.75);
 }
 
-/* Filters row */
 .filters-row {
   display: grid;
-  grid-template-columns: 1.3fr 0.8fr 0.8fr 0.7fr auto;
+  grid-template-columns: 1.3fr 0.9fr 0.9fr 0.8fr 0.8fr 0.8fr auto;
   gap: 10px;
   align-items: center;
   margin-top: 12px;
   margin-bottom: 10px;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1100px) {
   .filters-row {
     grid-template-columns: 1fr 1fr;
   }
@@ -57,7 +54,6 @@
     grid-template-columns: 1fr;
   }
 }
-
 /* Inputs */
 .input,
 .select {
@@ -222,9 +218,7 @@
   color: rgba(226, 232, 240, 0.92);
 }
 
-/* ✅ FIX: action-specific badge tints must match your class names
-   Your component generates: badge-login_success, badge-login_fail, etc.
-*/
+
 .badge-login_success {
   border-color: rgba(34, 197, 94, 0.45);
   background: rgba(34, 197, 94, 0.14);
@@ -281,4 +275,75 @@
   border: 1px solid rgba(239, 68, 68, 0.35);
   background: rgba(239, 68, 68, 0.12);
   color: rgba(226, 232, 240, 0.92);
+}
+/* ===== SSH EVENT badges  ===== */
+.badge-login_success {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.badge-login_fail {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.badge-session_open {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.badge-session_close {
+  border-color: rgba(168, 85, 247, 0.55);
+  background: rgba(168, 85, 247, 0.14);
+}
+
+.badge-disconnect {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.badge-other {
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.10);
+}
+
+/* ===== Small icon pill button (expand/collapse) ===== */
+.icon-pill {
+  height: 32px;
+  min-width: 42px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.35);
+  color: rgba(226, 232, 240, 0.9);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.icon-pill:hover {
+  background: rgba(2, 6, 23, 0.6);
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.icon-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Optional: make expanded raw area match theme tightly */
+.raw-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(2, 6, 23, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
+  padding: 12px;
+  color: rgba(226, 232, 240, 0.9);
+}
+/* Alerts responsive layout */
+@media (max-width: 1100px) {
+  .alerts-grid {
+    grid-template-columns: 1fr !important;
+  }
 }

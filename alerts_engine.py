@@ -4,23 +4,30 @@ alerts_engine.py
 ----------------
 Creates "chunked" alerts from recent events and links them to underlying evidence tables.
 
-Current supported alert sources:
-- FTP brute force (ftp_events + linked logs)
-- SSH brute force (ssh_events + linked logs)
+- For SSH + FTP brute force alerts, group by IP + username
+- Use alerts.last_event_time to avoid re-alerting on old evidence
+- 10-minute cooldown:
+    - If same (title + ip + username) has an ACTIVE alert within cooldown -> append (update last_event_time + link new evidence)
+    - Otherwise -> create new alert
+- If there is NO newer evidence than last_event_time -> do nothing (even if alert is resolved)
+
+Other supported alert sources:
 - Mass delete (logs)
 - Critical RMDIR (logs)
 - Nmap: New Port Detected (nmap_findings)
-- Web: traffic detections from apache access logs in logs ✅ NEW
+- Web: traffic detections from apache access logs in logs
 """
 
 from __future__ import annotations
-
+from datetime import datetime, timezone
 import re
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List, Tuple, Dict
 
 import psycopg2
 from collections import Counter
+
 
 DB_CONFIG = {
     "dbname": "logdb",
@@ -35,7 +42,9 @@ DB_CONFIG = {
 # -------------------------------
 BRUTE_FORCE_WINDOW_SECONDS = 120
 BRUTE_FORCE_THRESHOLD = 5
-BRUTE_FORCE_DEDUPE_MINUTES = 5
+
+#  cooldown for SSH + FTP brute force grouping
+BRUTE_FORCE_COOLDOWN_MINUTES = 10
 
 MASS_DELETE_WINDOW_SECONDS = 60
 MASS_DELETE_THRESHOLD = 3
@@ -43,10 +52,10 @@ MASS_DELETE_THRESHOLD = 3
 CRITICAL_RMDIR_WINDOW_SECONDS = 300
 
 # Nmap
-NMAP_DEDUPE_MINUTES = 60  # don't create same "new port" alert for same finding within this time
+NMAP_DEDUPE_MINUTES = 60
 
 # -------------------------------
-# Web traffic alert tunables (Option A+)
+# Web traffic alert tunables
 # -------------------------------
 WEB_WINDOW_SECONDS = 60
 WEB_DEDUPE_MINUTES = 5
@@ -78,39 +87,6 @@ def _connect():
     return psycopg2.connect(**DB_CONFIG)
 
 
-def alert_exists_recently(cur, title: str, ip_address: str | None) -> bool:
-    """
-    Dedupe by (title + ip) if ip is provided; otherwise by title only.
-    Uses BRUTE_FORCE_DEDUPE_MINUTES (legacy behavior for existing rules).
-    """
-    if ip_address:
-        cur.execute(
-            """
-            SELECT 1
-            FROM alerts
-            WHERE title = %s
-              AND ip_address = %s
-              AND status <> 'resolved'
-              AND created_at >= NOW() - (%s || ' minutes')::interval
-            LIMIT 1
-            """,
-            (title, ip_address, BRUTE_FORCE_DEDUPE_MINUTES),
-        )
-    else:
-        cur.execute(
-            """
-            SELECT 1
-            FROM alerts
-            WHERE title = %s
-              AND status <> 'resolved'
-              AND created_at >= NOW() - (%s || ' minutes')::interval
-            LIMIT 1
-            """,
-            (title, BRUTE_FORCE_DEDUPE_MINUTES),
-        )
-    return cur.fetchone() is not None
-
-
 def create_alert(
     cur,
     priority: str,
@@ -121,19 +97,19 @@ def create_alert(
     user_name: str | None = None,
     ip_address: str | None = None,
     file_target: str | None = None,
+    last_event_time: datetime | None = None,
 ) -> int:
     """
     Insert into alerts table and return alert_id.
-    alerts columns assumed:
-      (source, priority, title, description, user_name, ip_address, file_target)
+    NOW includes last_event_time (used for dedupe/append logic).
     """
     cur.execute(
         """
-        INSERT INTO alerts (source, priority, title, description, user_name, ip_address, file_target)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO alerts (source, priority, title, description, user_name, ip_address, file_target, last_event_time)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (source, priority, title, description, user_name, ip_address, file_target),
+        (source, priority, title, description, user_name, ip_address, file_target, last_event_time),
     )
     return cur.fetchone()[0]
 
@@ -152,29 +128,77 @@ def link_alert(cur, alert_id: int, log_type: str, log_id: int):
     )
 
 
-def nmap_alert_for_finding_exists(cur, finding_id: int) -> bool:
+def _get_latest_alert_for_key(
+    cur,
+    *,
+    title: str,
+    source: str,
+    ip_address: str,
+    user_name: str,
+):
     """
-    Strong dedupe for Nmap: if there's already an ACTIVE (not resolved) alert
-    linked to this exact nmap_findings row recently, don't recreate it.
+    Returns the most recent alert for (title + source + ip + user_name),
+    regardless of status (includes resolved). That’s important for:
+      - "resolved → rerun → no new evidence" => should NOT recreate.
     """
     cur.execute(
         """
-        SELECT 1
-        FROM alert_log_links allk
-        JOIN alerts a ON a.id = allk.alert_id
-        WHERE allk.log_type = 'nmap_findings'
-          AND allk.log_id = %s
-          AND a.status <> 'resolved'
-          AND a.created_at >= NOW() - (%s || ' minutes')::interval
+        SELECT id, status, created_at, last_event_time
+        FROM alerts
+        WHERE title = %s
+          AND source = %s
+          AND ip_address = %s
+          AND user_name = %s
+        ORDER BY created_at DESC
         LIMIT 1
         """,
-        (finding_id, NMAP_DEDUPE_MINUTES),
+        (title, source, ip_address, user_name),
     )
-    return cur.fetchone() is not None
+    return cur.fetchone()
+
+
+def _update_alert_last_event_time(cur, alert_id: int, new_last_event_time: datetime):
+    cur.execute(
+        """
+        UPDATE alerts
+        SET last_event_time = %s
+        WHERE id = %s
+        """,
+        (new_last_event_time, alert_id),
+    )
+
+
+def _append_alert_description(cur, alert_id: int, extra_line: str):
+    """
+    Optional: append a short note when we’re grouping into an active alert.
+    Keeps UI human-readable.
+    """
+    cur.execute(
+        """
+        UPDATE alerts
+        SET description = COALESCE(description, '') || %s
+        WHERE id = %s
+        """,
+        ("\n" + extra_line, alert_id),
+    )
+
+
+def _new_evidence_after_last_event(last_seen: datetime, last_event_time: Optional[datetime]) -> bool:
+    """
+    If we have no last_event_time stored, treat it as "unknown" => allow create.
+    Otherwise only act if we truly saw newer evidence.
+    """
+    if last_event_time is None:
+        return True
+    return last_seen > last_event_time
+
+
+def _within_cooldown(created_at: datetime) -> bool:
+    return created_at >= (datetime.utcnow() - timedelta(minutes=BRUTE_FORCE_COOLDOWN_MINUTES))
 
 
 # -------------------------------
-# Rule 1: FTP brute force (chunked by IP+username)
+# Rule 1: FTP brute force (grouped by IP + username)
 # -------------------------------
 def brute_force_ftp_rule(cur):
     cur.execute(
@@ -209,35 +233,67 @@ def brute_force_ftp_rule(cur):
 
     rows = cur.fetchall()
     for ip, username_bucket, fail_count, first_seen, last_seen, ftp_event_ids, related_log_ids in rows:
-        title = "FTP Brute Force Suspected"
-        if alert_exists_recently(cur, title, ip):
+        if not ip:
             continue
 
+        title = "FTP Brute Force Suspected"
+        source = "ftp"
+        user_key = username_bucket or "(unknown)"
+
+        latest = _get_latest_alert_for_key(
+            cur, title=title, source=source, ip_address=ip, user_name=user_key
+        )
+
+        if latest:
+            alert_id, status, created_at, last_event_time = latest
+
+            #  if no newer evidence, do nothing (even if resolved)
+            if not _new_evidence_after_last_event(last_seen, last_event_time):
+                continue
+
+            # If alert is active and within cooldown, append/link instead of new alert
+            if (status or "").lower() != "resolved" and _within_cooldown(created_at):
+                _update_alert_last_event_time(cur, int(alert_id), last_seen)
+                _append_alert_description(
+                    cur,
+                    int(alert_id),
+                    f"[grouped] New FTP fails detected: +{fail_count} (last_seen={last_seen})",
+                )
+
+                for feid in (ftp_event_ids or []):
+                    link_alert(cur, int(alert_id), "ftp_events", int(feid))
+                for lid in (related_log_ids or []):
+                    link_alert(cur, int(alert_id), "logs", int(lid))
+
+                continue
+
+        # Otherwise, create a new alert
         description = (
             f"Multiple FTP login failures detected (possible brute force). "
-            f"ip={ip}, user={username_bucket}, fails={fail_count}, "
+            f"ip={ip}, user={user_key}, fails={fail_count}, "
             f"window={int(BRUTE_FORCE_WINDOW_SECONDS)}s, "
             f"first={first_seen}, last={last_seen}"
         )
 
-        alert_id = create_alert(
+        new_alert_id = create_alert(
             cur,
             priority="high",
             title=title,
             description=description,
-            source="ftp",
-            user_name=None if username_bucket == "(unknown)" else username_bucket,
+            source=source,
+            user_name=user_key,
             ip_address=ip,
+            last_event_time=last_seen,
         )
 
         for feid in (ftp_event_ids or []):
-            link_alert(cur, alert_id, "ftp_events", int(feid))
+            link_alert(cur, int(new_alert_id), "ftp_events", int(feid))
         for lid in (related_log_ids or []):
-            link_alert(cur, alert_id, "logs", int(lid))
+            link_alert(cur, int(new_alert_id), "logs", int(lid))
 
 
 # -------------------------------
-# Rule 2: SSH brute force (chunked by IP+username)
+# Rule 2: SSH brute force (grouped by IP + username)
 # -------------------------------
 def brute_force_ssh_rule(cur):
     cur.execute(
@@ -268,32 +324,69 @@ def brute_force_ssh_rule(cur):
 
     rows = cur.fetchall()
     for ip, username_bucket, fail_count, first_seen, last_seen, ssh_event_ids, related_log_ids in rows:
-        title = "SSH Brute Force Suspected"
-        if alert_exists_recently(cur, title, ip):
+        if not ip:
             continue
 
+        title = "SSH Brute Force Suspected"
+        source = "ssh"
+        user_key = username_bucket or "(unknown)"
+
+        latest = _get_latest_alert_for_key(
+            cur, title=title, source=source, ip_address=ip, user_name=user_key
+        )
+
+        if latest:
+            alert_id, status, created_at, last_event_time = latest
+
+            #  if no newer evidence, do nothing (even if resolved)
+            if not _new_evidence_after_last_event(last_seen, last_event_time):
+                continue
+
+            # If alert is active and within cooldown, append/link instead of new alert
+            if (status or "").lower() != "resolved" and _within_cooldown(created_at):
+                _update_alert_last_event_time(cur, int(alert_id), last_seen)
+                _append_alert_description(
+                    cur,
+                    int(alert_id),
+                    f"[grouped] New SSH fails detected: +{fail_count} (last_seen={last_seen})",
+                )
+
+                for seid in (ssh_event_ids or []):
+                    link_alert(cur, int(alert_id), "ssh_events", int(seid))
+                for lid in (related_log_ids or []):
+                    link_alert(cur, int(alert_id), "logs", int(lid))
+
+                continue
+
+        # Otherwise, create a new alert
         description = (
             f"Multiple SSH login failures detected (possible brute force). "
-            f"ip={ip}, user={username_bucket}, fails={fail_count}, "
+            f"ip={ip}, user={user_key}, fails={fail_count}, "
             f"window={int(BRUTE_FORCE_WINDOW_SECONDS)}s, "
             f"first={first_seen}, last={last_seen}"
         )
 
-        alert_id = create_alert(
+        new_alert_id = create_alert(
             cur,
             priority="high",
             title=title,
             description=description,
-            source="ssh",
-            user_name=None if username_bucket == "(unknown)" else username_bucket,
+            source=source,
+            user_name=user_key,
             ip_address=ip,
+            last_event_time=last_seen,
         )
 
         for seid in (ssh_event_ids or []):
-            link_alert(cur, alert_id, "ssh_events", int(seid))
+            link_alert(cur, int(new_alert_id), "ssh_events", int(seid))
         for lid in (related_log_ids or []):
-            link_alert(cur, alert_id, "logs", int(lid))
+            link_alert(cur, int(new_alert_id), "logs", int(lid))
 
+
+# -------------------------------
+# Rule 3: Mass delete (logs table)
+# -------------------------------
+from datetime import datetime, timezone
 
 # -------------------------------
 # Rule 3: Mass delete (logs table)
@@ -301,19 +394,36 @@ def brute_force_ssh_rule(cur):
 def mass_delete_rule(cur):
     cur.execute(
         """
-        SELECT array_agg(id)
+        SELECT
+          array_agg(id) AS log_ids,
+          MAX(log_time) AS last_seen
         FROM logs
         WHERE message ILIKE %s
-          AND log_time > NOW() - (%s || ' seconds')::interval
+          AND log_time >= (NOW() AT TIME ZONE 'UTC') - (%s || ' seconds')::interval
         HAVING COUNT(*) >= %s
         """,
         ("%DELETE%", MASS_DELETE_WINDOW_SECONDS, MASS_DELETE_THRESHOLD),
     )
 
-    result = cur.fetchone()
-    if result and result[0]:
+    row = cur.fetchone()
+    if row and row[0]:
+        log_ids, last_seen = row[0], row[1]
+
         title = "Mass Deletion Activity"
-        if alert_exists_recently(cur, title, None):
+
+        # simple dedupe: don't spam if unresolved within cooldown
+        cur.execute(
+            """
+            SELECT 1
+            FROM alerts
+            WHERE title = %s
+              AND status <> 'resolved'
+              AND created_at >= NOW() - (%s || ' minutes')::interval
+            LIMIT 1
+            """,
+            (title, BRUTE_FORCE_COOLDOWN_MINUTES),
+        )
+        if cur.fetchone():
             return
 
         alert_id = create_alert(
@@ -322,10 +432,10 @@ def mass_delete_rule(cur):
             title=title,
             description="Multiple deletes detected in short time",
             source="logs",
+            last_event_time=last_seen,  #  match evidence time
         )
-        for lid in result[0]:
-            link_alert(cur, alert_id, "logs", int(lid))
-
+        for lid in log_ids:
+            link_alert(cur, int(alert_id), "logs", int(lid))
 
 # -------------------------------
 # Rule 4: Critical directory removal (logs table)
@@ -347,7 +457,19 @@ def critical_rmdir_rule(cur):
     result = cur.fetchone()
     if result and result[0]:
         title = "Directory Removal Detected"
-        if alert_exists_recently(cur, title, None):
+
+        cur.execute(
+            """
+            SELECT 1
+            FROM alerts
+            WHERE title = %s
+              AND status <> 'resolved'
+              AND created_at >= NOW() - (%s || ' minutes')::interval
+            LIMIT 1
+            """,
+            (title, BRUTE_FORCE_COOLDOWN_MINUTES),
+        )
+        if cur.fetchone():
             return
 
         alert_id = create_alert(
@@ -356,19 +478,33 @@ def critical_rmdir_rule(cur):
             title=title,
             description="Directory removal activity detected (RMDIR)",
             source="logs",
+            last_event_time=datetime.utcnow(),
         )
         for lid in result[0]:
-            link_alert(cur, alert_id, "logs", int(lid))
+            link_alert(cur, int(alert_id), "logs", int(lid))
 
 
 # -------------------------------
-# Rule 5: Nmap "New Port Detected" (nmap_findings)
+# Rule 5: Nmap "New Port Detected"
 # -------------------------------
+def nmap_alert_for_finding_exists(cur, finding_id: int) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM alert_log_links allk
+        JOIN alerts a ON a.id = allk.alert_id
+        WHERE allk.log_type = 'nmap_findings'
+          AND allk.log_id = %s
+          AND a.status <> 'resolved'
+          AND a.created_at >= NOW() - (%s || ' minutes')::interval
+        LIMIT 1
+        """,
+        (finding_id, NMAP_DEDUPE_MINUTES),
+    )
+    return cur.fetchone() is not None
+
+
 def nmap_new_port_rule(cur):
-    """
-    Creates alerts for ports that are OPEN in the latest scan but were NOT open
-    in the immediately previous scan (per target+host).
-    """
     cur.execute(
         """
         WITH latest AS (
@@ -435,17 +571,15 @@ def nmap_new_port_rule(cur):
             user_name=None,
             ip_address=host,
             file_target=file_target,
+            last_event_time=scan_time,
         )
 
-        link_alert(cur, alert_id, "nmap_findings", int(finding_id))
+        link_alert(cur, int(alert_id), "nmap_findings", int(finding_id))
 
 
 # -------------------------------
-# Web helpers
+# Web helpers + Rule 6 unchanged
 # -------------------------------
-
-# Example line:
-# ::1 - - [22/Feb/2026:04:03:22 +0300] "GET /login HTTP/1.1" 404 432 "-" "curl/8.5.0"
 _APACHE_ACCESS_RE = re.compile(
     r'^(?P<ip>\S+)\s+\S+\s+\S+\s+\[(?P<ts>[^\]]+)\]\s+"(?P<method>[A-Z]+)\s+(?P<url>\S+)'
     r'(?:\s+[^"]*)?"\s+(?P<status>\d{3})\s+\S+\s+"[^"]*"\s+"(?P<ua>[^"]*)"'
@@ -490,9 +624,6 @@ def parse_apache_access_line(line: str) -> Optional[WebHit]:
 
 
 def alert_exists_recently_web(cur, title: str, ip_address: str | None) -> bool:
-    """
-    Web dedupe (separate from brute-force dedupe).
-    """
     if ip_address:
         cur.execute(
             """
@@ -521,16 +652,7 @@ def alert_exists_recently_web(cur, title: str, ip_address: str | None) -> bool:
     return cur.fetchone() is not None
 
 
-# -------------------------------
-# Rule 6: Web traffic detection (apache access logs in public.logs)
-# -------------------------------
 def web_scan_rule(cur):
-    """
-    Creates alerts from apache access logs stored in public.logs.
-    Uses UTC 'now' for correct comparison (logs.log_time is naive UTC in this project).
-    Links evidence via alert_log_links(log_type='logs', log_id=<logs.id>).
-    """
-
     cur.execute(
         """
         SELECT id, log_time, message
@@ -576,15 +698,13 @@ def web_scan_rule(cur):
         if hit.ua:
             per_ip_uas.setdefault(ip, Counter())[hit.ua[:120]] += 1
 
-        # Sensitive path probing
         if any(path_l.startswith(s) for s in sens):
             per_ip_sensitive_hits.setdefault(ip, []).append((int(log_id), hit.path))
 
-        # Suspicious methods
         if hit.method in WEB_SUSPICIOUS_METHODS:
             per_ip_suspicious_method_hits.setdefault(ip, []).append((int(log_id), hit.method, hit.path, hit.status))
 
-    # 1) Sensitive path probing alerts (HIGH)
+    # 1) Sensitive path probing
     for ip, items in per_ip_sensitive_hits.items():
         title = "Web: Sensitive Path Probing"
         if alert_exists_recently_web(cur, title, ip):
@@ -613,12 +733,13 @@ def web_scan_rule(cur):
             description=description,
             source="web",
             ip_address=ip,
+            last_event_time=datetime.utcnow(),
         )
 
         for lid, _p in items:
-            link_alert(cur, alert_id, "logs", int(lid))
+            link_alert(cur, int(alert_id), "logs", int(lid))
 
-    # 2) Burst scan alerts (HIGH): many requests + (many 404/403 OR many unique paths)
+    # 2) Burst scan suspected
     for ip, total in per_ip_total.items():
         err = per_ip_404_403.get(ip, 0)
         unique_paths = len(per_ip_paths.get(ip, {}))
@@ -650,12 +771,13 @@ def web_scan_rule(cur):
             description=description,
             source="web",
             ip_address=ip,
+            last_event_time=datetime.utcnow(),
         )
 
         for lid in (per_ip_evidence_ids.get(ip, [])[:200]):
-            link_alert(cur, alert_id, "logs", int(lid))
+            link_alert(cur, int(alert_id), "logs", int(lid))
 
-    # 3) Suspicious method alerts (MEDIUM/HIGH)
+    # 3) Suspicious HTTP method
     for ip, items in per_ip_suspicious_method_hits.items():
         title = "Web: Suspicious HTTP Method"
         if alert_exists_recently_web(cur, title, ip):
@@ -664,11 +786,9 @@ def web_scan_rule(cur):
         methods = {m for (_lid, m, _p, _st) in items}
         sev = "medium"
 
-        # TRACE/CONNECT is strong signal => HIGH
         if "TRACE" in methods or "CONNECT" in methods:
             sev = "high"
         else:
-            # upgrade if error/deny/server error
             for (_lid, _m, _p, st) in items:
                 if st in (401, 403, 404) or st >= 500:
                     sev = "high"
@@ -694,10 +814,11 @@ def web_scan_rule(cur):
             description=description,
             source="web",
             ip_address=ip,
+            last_event_time=datetime.utcnow(),
         )
 
         for lid, _m, _p, _st in items:
-            link_alert(cur, alert_id, "logs", int(lid))
+            link_alert(cur, int(alert_id), "logs", int(lid))
 
 
 # -------------------------------
@@ -708,15 +829,16 @@ def main():
     try:
         with conn:
             with conn.cursor() as cur:
+                #  SSH + FTP now share the same dedupe/append logic style
                 brute_force_ftp_rule(cur)
                 brute_force_ssh_rule(cur)
 
-                # NEW: Web detection before filesystem rules
                 web_scan_rule(cur)
 
                 mass_delete_rule(cur)
                 critical_rmdir_rule(cur)
                 nmap_new_port_rule(cur)
+
         print("Alerts engine executed successfully")
     finally:
         conn.close()

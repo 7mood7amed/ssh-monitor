@@ -1,10 +1,19 @@
 body {
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-  background-color: #f4f6f8;
-  margin: 0;
-  color: #222;
-}
 
+
+  background: linear-gradient(
+    180deg,
+    #0f172a 0%,
+    #020617 100%
+  );
+
+  margin: 0;
+  color: #e2e8f0;
+
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
 .header {
   background-color: #0a3d62;
   color: white;
@@ -67,7 +76,7 @@ body {
   width: 100%;
 }
 
-/* 🔴 Flash effect for high severity logs */
+
 @keyframes flashRed {
   0% {
     background-color: #ffe5e5;
@@ -86,7 +95,7 @@ body {
   animation: flashRed 2.5s ease-in-out;
 }
 
-/* Optional: make severity colors more readable */
+
 .severity-low {
   color: green;
   font-weight: 600;

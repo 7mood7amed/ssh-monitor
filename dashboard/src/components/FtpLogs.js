@@ -1,4 +1,3 @@
-// dashboard/src/components/FtpLogs.js
 import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
 import "./FtpLogs.css";
@@ -17,7 +16,6 @@ const IMPORTANT_ACTIONS = [
 const LIMIT_OPTIONS = [20, 50, 100];
 
 // We fetch a bigger chunk, then FILTER + PAGINATE locally
-// so "Show 20" always shows 20 AFTER filtering.
 const FETCH_LIMIT = 7000;
 
 function cleanIp(ip) {
@@ -29,11 +27,9 @@ function extractFileFromRaw(raw) {
   const msg = String(raw || "").replace("\x00", "").trim();
   if (!msg) return "";
 
-  // If backend wrote /upload/... in quotes (OK DELETE / OK UPLOAD)
   const uploadPath = msg.match(/"((?:\/upload|\/uploads)[^"]+)"/i)?.[1];
   if (uploadPath) return uploadPath;
 
-  // FileZilla commands often look like: "STOR filename"
   const stor = msg.match(/"STOR\s+([^"]+)"/i)?.[1];
   if (stor) return stor.trim();
 
@@ -58,6 +54,49 @@ function extractFileFromRaw(raw) {
   return "";
 }
 
+function normalizeSeverity(value) {
+  const s = String(value || "").trim().toUpperCase();
+  if (["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(s)) return s;
+  return "";
+}
+
+// fallback in case backend hasn't been patched yet
+function inferFtpSeverityFallback(action) {
+  const a = String(action || "").toUpperCase();
+
+  if (a === "RMDIR") return "CRITICAL";
+  if (a === "DELETE") return "HIGH";
+  if (a === "LOGIN_FAIL") return "HIGH";
+  if (a === "RENAME" || a === "MKDIR") return "MEDIUM";
+  return "LOW";
+}
+
+function SeverityBadge({ severity }) {
+  const sev = normalizeSeverity(severity);
+  const label = sev || "LOW";
+
+  const style = {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: "999px",
+    fontSize: "12px",
+    fontWeight: 700,
+    letterSpacing: "0.4px",
+    textTransform: "uppercase",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background:
+      label === "CRITICAL"
+        ? "rgba(239,68,68,0.25)"
+        : label === "HIGH"
+        ? "rgba(249,115,22,0.22)"
+        : label === "MEDIUM"
+        ? "rgba(234,179,8,0.20)"
+        : "rgba(34,197,94,0.18)",
+  };
+
+  return <span style={style}>{label}</span>;
+}
+
 export default function FtpLogs({ refreshTrigger }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -67,6 +106,7 @@ export default function FtpLogs({ refreshTrigger }) {
   const [username, setUsername] = useState("");
   const [ip, setIp] = useState("");
   const [action, setAction] = useState("all");
+  const [severity, setSeverity] = useState("all");
 
   // paging (LOCAL paging after filtering)
   const [page, setPage] = useState(1);
@@ -105,35 +145,38 @@ export default function FtpLogs({ refreshTrigger }) {
   // When any filter changes -> go back to page 1
   useEffect(() => {
     setPage(1);
-  }, [q, username, ip, action, limit]);
+  }, [q, username, ip, action, severity, limit]);
 
   const filtered = useMemo(() => {
     const qv = q.trim().toLowerCase();
     const uv = username.trim().toLowerCase();
     const ipv = ip.trim().toLowerCase();
-    const av = action === "all" ? "" : action;
+    const av = action === "all" ? "" : action.toUpperCase();
+    const sv = severity === "all" ? "" : severity.toUpperCase();
 
     const normalized = apiRows.map((r, idx) => {
       const raw = r.raw || "";
       const fileFromRaw = extractFileFromRaw(raw);
+
+      const actionU = String(r.action || "OTHER").toUpperCase();
+      const sevU = normalizeSeverity(r.severity) || inferFtpSeverityFallback(actionU);
 
       return {
         id: `${r.timestamp || "t"}-${idx}`,
         timestamp: r.timestamp || "",
         user: r.user || "",
         ip: cleanIp(r.ip || ""),
-        action: String(r.action || "OTHER").toUpperCase(),
+        action: actionU,
+        severity: sevU,
         file: r.file_target || fileFromRaw || "-",
         raw,
       };
     });
 
     return normalized.filter((row) => {
-      // keep only important actions
-      // optionally hide OTHER only if user wants
-      // if (!IMPORTANT_ACTIONS.includes(row.action)) return false;
-      
       if (av && row.action !== av) return false;
+      if (sv && row.severity !== sv) return false;
+
       if (uv && !String(row.user || "").toLowerCase().includes(uv)) return false;
       if (ipv && !String(row.ip || "").toLowerCase().includes(ipv)) return false;
 
@@ -144,7 +187,7 @@ export default function FtpLogs({ refreshTrigger }) {
 
       return true;
     });
-  }, [apiRows, q, username, ip, action]);
+  }, [apiRows, q, username, ip, action, severity]);
 
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -159,6 +202,7 @@ export default function FtpLogs({ refreshTrigger }) {
     setUsername("");
     setIp("");
     setAction("all");
+    setSeverity("all");
     setPage(1);
   };
 
@@ -203,6 +247,7 @@ export default function FtpLogs({ refreshTrigger }) {
             onChange={(e) => setUsername(e.target.value)}
           />
           <input className="input" placeholder="IP" value={ip} onChange={(e) => setIp(e.target.value)} />
+
           <select className="select" value={action} onChange={(e) => setAction(e.target.value)}>
             <option value="all">All Actions</option>
             {IMPORTANT_ACTIONS.map((a) => (
@@ -210,6 +255,15 @@ export default function FtpLogs({ refreshTrigger }) {
                 {a}
               </option>
             ))}
+          </select>
+
+          {/* ✅ new: severity filter */}
+          <select className="select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
+            <option value="all">All Severity</option>
+            <option value="low">LOW</option>
+            <option value="medium">MEDIUM</option>
+            <option value="high">HIGH</option>
+            <option value="critical">CRITICAL</option>
           </select>
 
           <button className="btn btn-secondary" onClick={clearFilters} disabled={loading}>
@@ -234,13 +288,15 @@ export default function FtpLogs({ refreshTrigger }) {
                 <th style={{ width: 140 }}>USER</th>
                 <th style={{ width: 160 }}>IP</th>
                 <th style={{ width: 160 }}>ACTION</th>
+                {/* ✅ new */}
+                <th style={{ width: 140 }}>SEVERITY</th>
                 <th>FILE / TARGET</th>
               </tr>
             </thead>
             <tbody>
               {pageRows.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="empty">
+                  <td colSpan={6} className="empty">
                     No FTP logs match your filters.
                   </td>
                 </tr>
@@ -254,6 +310,9 @@ export default function FtpLogs({ refreshTrigger }) {
                       <span className={`badge badge-${String(r.action).toLowerCase().replace(/\s+/g, "-")}`}>
                         {r.action}
                       </span>
+                    </td>
+                    <td>
+                      <SeverityBadge severity={r.severity} />
                     </td>
                     <td className="mono">{r.file || "-"}</td>
                   </tr>
