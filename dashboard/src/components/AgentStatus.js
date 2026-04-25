@@ -1,13 +1,14 @@
+
 import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
-import "./FtpLogs.css";
+import "./FtpLogs.css"; 
 
 function normalizeStatus(value) {
   const s = String(value || "").trim().toLowerCase();
   if (!s) return "unknown";
   if (s === "active" || s === "up" || s === "online") return "active";
   if (s === "inactive" || s === "down" || s === "offline") return "inactive";
-  return s;
+  return s; 
 }
 
 function StatusBadge({ status }) {

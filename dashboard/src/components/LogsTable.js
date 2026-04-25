@@ -250,7 +250,7 @@ const LogsTable = () => {
                           {r.ip || ""}
                         </td>
 
-
+                        
                         <td title={r.event_type}>
                           <span className={`badge badge-${eventKey}`}>{r.event_type}</span>
                         </td>
@@ -266,7 +266,7 @@ const LogsTable = () => {
                           {r.message}
                         </td>
 
-
+                        
                         <td>
                           <button className="icon-pill" type="button" onClick={() => toggleExpand(r.id)} aria-label="Toggle raw">
                             {expanded ? "▲" : "▼"}

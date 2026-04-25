@@ -19,7 +19,7 @@ function Ring({ label, value, total, accentClass }) {
     <div className="la-item">
       <div
         className={`la-ring ${accentClass}`}
-        style={{ ["--deg"]: `${deg}deg` }}
+        style={{ "--deg": `${deg}deg` }}
         aria-label={`${label} ${value} of ${total}`}
         title={`${label}: ${value}/${total}`}
       >

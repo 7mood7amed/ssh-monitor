@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
-import "../components/FtpLogs.css";
+import "../components/FtpLogs.css"; 
 
 const PRIORITY_META = {
   critical: { label: "CRITICAL", bg: "rgba(239,68,68,0.25)", fg: "#fff", border: "rgba(239,68,68,0.55)" },
@@ -162,7 +162,7 @@ export default function AlertsPage({ refreshTrigger }) {
           </button>
         </div>
 
-
+        
         <div className="filters-row">
           <input
             className="input"
@@ -186,7 +186,7 @@ export default function AlertsPage({ refreshTrigger }) {
             <option value="resolved">Resolved</option>
           </select>
 
-
+          
           <label
             style={{
               display: "flex",
@@ -357,7 +357,7 @@ export default function AlertsPage({ refreshTrigger }) {
             </div>
           </div>
 
-          
+          {/* DETAILS (second dark card) */}
           <div className="card" style={{ padding: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
               <div>

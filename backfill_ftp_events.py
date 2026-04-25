@@ -13,9 +13,15 @@ TS_RE = re.compile(r"^(?P<dow>\w+)\s+(?P<mon>\w+)\s+(?P<day>\d+)\s+(?P<time>\d+:
 IP_RE = re.compile(r'Client\s+"::ffff:(?P<ip>[\d.]+)"')
 
 # Match the *real* vsftpd event formats we want to store.
+# Examples:
+#   [hero] OK LOGIN: Client "::ffff:192.168.56.1"
+#   [hero] FAIL LOGIN: Client "::ffff:127.0.0.1"
+#   [hero] OK UPLOAD: Client "::ffff:192.168.56.1", "/upload/file.txt", ...
+#   [hero] OK DOWNLOAD: Client "::ffff:192.168.56.1", "/upload/file.txt", ...
+#   [hero] FAIL DELETE: Client "::ffff:192.168.56.1", "/file.txt"
 EVENT_RE = re.compile(r"\]\s+(?P<status>OK|FAIL)\s+(?P<verb>[A-Z_]+):", re.IGNORECASE)
 
-# Only keep these event types
+# Only keep these event types 
 ALLOWED_ACTIONS = {
     "LOGIN_SUCCESS",
     "LOGIN_FAIL",

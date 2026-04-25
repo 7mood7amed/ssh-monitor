@@ -35,7 +35,7 @@ const ChartPanel = ({ refreshTrigger }) => {
       <div className="chart-card">
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={chartData}>
-
+            
             {/* Grid styling for dark dashboard */}
             <CartesianGrid
               strokeDasharray="3 3"

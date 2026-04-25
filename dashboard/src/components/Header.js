@@ -45,6 +45,10 @@ function Header({ lastUpdated }) {
             Nmap Logs
           </NavLink>
 
+          <NavLink to="/ai" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            AI Insights
+          </NavLink>
+
           <NavLink to="/alerts" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             Alerts
           </NavLink>

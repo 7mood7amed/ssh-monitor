@@ -123,7 +123,7 @@ const WebTraffic = () => {
             <div className="card-subtitle">Apache Access Log (requests, status codes, user-agents)</div>
           </div>
 
-
+          
           <div className="page-size-buttons" role="group" aria-label="Page size">
             {LIMIT_OPTIONS.map((n) => (
               <button
@@ -141,7 +141,7 @@ const WebTraffic = () => {
           </div>
         </div>
 
-
+        
         <div className="filters-row">
           <input
             className="input"
@@ -176,7 +176,7 @@ const WebTraffic = () => {
           </button>
         </div>
 
-
+        
         <div className="meta-row">
           <div className="meta-left">
             Showing <b>{logs.length}</b> of <b>{total}</b> results
@@ -186,7 +186,7 @@ const WebTraffic = () => {
           </div>
         </div>
 
-
+        
         <div className="table-wrap">
           <table className="table">
             <thead>
@@ -275,7 +275,7 @@ const WebTraffic = () => {
           </table>
         </div>
 
-
+        
         <div className="pager">
           <button className="btn btn-secondary" onClick={handlePrev} disabled={page === 1}>
             Prev

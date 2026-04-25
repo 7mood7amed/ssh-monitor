@@ -1,3 +1,5 @@
+/* dashboard/src/components/FtpLogs.css */
+/* Based on WebTraffic.css style – same layout/cards/table/buttons */
 
 .content {
   padding: 24px;
@@ -218,7 +220,9 @@
   color: rgba(226, 232, 240, 0.92);
 }
 
-
+/* ✅ FIX: action-specific badge tints must match your class names
+   Your component generates: badge-login_success, badge-login_fail, etc.
+*/
 .badge-login_success {
   border-color: rgba(34, 197, 94, 0.45);
   background: rgba(34, 197, 94, 0.14);
@@ -276,7 +280,7 @@
   background: rgba(239, 68, 68, 0.12);
   color: rgba(226, 232, 240, 0.92);
 }
-/* ===== SSH EVENT badges  ===== */
+/* ===== SSH EVENT badges (match FTP badge style) ===== */
 .badge-login_success {
   border-color: rgba(34, 197, 94, 0.45);
   background: rgba(34, 197, 94, 0.14);

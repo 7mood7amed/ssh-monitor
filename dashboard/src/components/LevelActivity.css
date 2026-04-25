@@ -44,7 +44,7 @@
   height: 88px;
   border-radius: 999px;
 
-  /* Grey base ring */
+  /* Grey base ring (dark-friendly) */
   background: conic-gradient(var(--accent) var(--deg), rgba(148, 163, 184, 0.22) 0);
   display: grid;
   place-items: center;
@@ -55,7 +55,7 @@
   height: 70px;
   border-radius: 999px;
 
-
+  
   background: rgba(2, 6, 23, 0.55);
   border: 1px solid rgba(148, 163, 184, 0.18);
   display: grid;

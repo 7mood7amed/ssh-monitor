@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # =========================================
 # File: ssh-monitor/api_server.py
@@ -8,7 +9,7 @@
 # =========================================
 
 from __future__ import annotations
-
+from ai_engine import analyze_recent_activity
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -1316,6 +1317,8 @@ def home():
                 "/api/nmap_findings",
                 "/api/export",
                 "/api/alerts",
+                "/api/ai/analyze",
+                "/api/ai/top-correlations",
             ],
         }
     )
@@ -1816,5 +1819,49 @@ def severity_summary():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ai/analyze", methods=["GET"])
+def ai_analyze():
+    try:
+        hours = request.args.get("hours", "1")
+        try:
+            hours_int = int(hours)
+        except Exception:
+            hours_int = 1
+
+        result = analyze_recent_activity(hours=hours_int)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai/top-correlations", methods=["GET"])
+def ai_top_correlations():
+    try:
+        hours = request.args.get("hours", "1")
+        try:
+            hours_int = int(hours)
+        except Exception:
+            hours_int = 1
+
+        result = analyze_recent_activity(hours=hours_int)
+
+        return jsonify({
+            "window_hours": result["window_hours"],
+            "generated_at": result["generated_at"],
+            "risk": result["risk"],
+
+            # ✅ NEW STRUCTURE
+            "top_activity": result["correlations"].get("top_activity_ip"),
+            "top_external": result["correlations"].get("top_external_ip"),
+            "top_internal": result["correlations"].get("top_internal_ip"),
+
+            "multi_source_ips": result["correlations"].get("multi_source_ips", []),
+            "correlated_ips": result["correlations"].get("correlated_ips", []),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

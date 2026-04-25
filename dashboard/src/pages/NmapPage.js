@@ -33,21 +33,18 @@ const LIMIT_OPTIONS = [20, 50, 100];
 export default function NmapPage() {
   const [rows, setRows] = useState([]);
 
-  // Filters
   const [q, setQ] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("");
   const [state, setState] = useState("All");
   const [service, setService] = useState("All");
-  const [severity, setSeverity] = useState("All"); // frontend-only filter
+  const [severity, setSeverity] = useState("All");
 
-  // Pagination
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
 
-  // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
   }, [q, host, port, state, service, severity, pageSize]);
@@ -62,7 +59,6 @@ export default function NmapPage() {
     if (port.trim()) params.set("port", port.trim());
     if (state !== "All") params.set("state", state);
     if (service !== "All") params.set("service", service);
-
 
     return `${API_BASE_URL}/api/nmap_findings?${params.toString()}`;
   }, [page, pageSize, q, host, port, state, service]);
@@ -98,12 +94,38 @@ export default function NmapPage() {
     setPage(1);
   };
 
-  // Frontend severity filter
   const filteredRows = useMemo(() => {
     if (severity === "All") return rows;
     const sv = severity.toLowerCase();
     return rows.filter((r) => String(r.severity || "").toLowerCase() === sv);
   }, [rows, severity]);
+
+  const servicesByIp = useMemo(() => {
+    const grouped = {};
+
+    filteredRows
+      .filter((r) => String(r.state || "").toLowerCase() === "open")
+      .forEach((r) => {
+        const ip = r.host || r.target || "Unknown IP";
+        const serviceName = r.service || "unknown";
+        const portNumber = r.port || "unknown";
+        const proto = r.proto || "tcp";
+        const serviceLabel = `${serviceName} (${portNumber}/${proto})`;
+
+        if (!grouped[ip]) {
+          grouped[ip] = new Set();
+        }
+
+        grouped[ip].add(serviceLabel);
+      });
+
+    return Object.entries(grouped)
+      .map(([ip, services]) => ({
+        ip,
+        services: Array.from(services),
+      }))
+      .sort((a, b) => b.services.length - a.services.length);
+  }, [filteredRows]);
 
   const handlePrev = () => setPage((p) => Math.max(p - 1, 1));
   const handleNext = () => setPage((p) => Math.min(p + 1, totalPages || 1));
@@ -114,10 +136,11 @@ export default function NmapPage() {
         <div className="card-header">
           <div>
             <h2 className="card-title">🧭 NMAP Findings</h2>
-            <div className="card-subtitle">Port Scan Results (target/host/port/state/service)</div>
+            <div className="card-subtitle">
+              Open services grouped by host/IP, with detailed scan results below.
+            </div>
           </div>
 
-          
           <div className="page-size-buttons" role="group" aria-label="Page size">
             {LIMIT_OPTIONS.map((n) => (
               <button
@@ -135,28 +158,10 @@ export default function NmapPage() {
           </div>
         </div>
 
-        {/*  Filters row */}
         <div className="filters-row">
-          <input
-            className="input"
-            placeholder="Search target/host/service..."
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-
-          <input
-            className="input"
-            placeholder="Host (e.g. 127.0.0.1)"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-
-          <input
-            className="input"
-            placeholder="Port (e.g. 22)"
-            value={port}
-            onChange={(e) => setPort(e.target.value)}
-          />
+          <input className="input" placeholder="Search target/host/service..." value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="input" placeholder="Host (e.g. 127.0.0.1)" value={host} onChange={(e) => setHost(e.target.value)} />
+          <input className="input" placeholder="Port (e.g. 22)" value={port} onChange={(e) => setPort(e.target.value)} />
 
           <select className="select" value={state} onChange={(e) => setState(e.target.value)}>
             <option value="All">All States</option>
@@ -188,7 +193,6 @@ export default function NmapPage() {
           </button>
         </div>
 
-        {/*  Meta row */}
         <div className="meta-row">
           <div className="meta-left">
             Showing <b>{filteredRows.length}</b> of <b>{total}</b> results
@@ -198,7 +202,38 @@ export default function NmapPage() {
           </div>
         </div>
 
-        {/* Table */}
+        <div className="card" style={{ marginBottom: 18 }}>
+          <h3 className="card-title">Multi-Service IP Summary</h3>
+          <div className="card-subtitle">
+            This groups open services by IP so analysts can quickly identify hosts exposing multiple services.
+          </div>
+
+          {servicesByIp.length === 0 ? (
+            <p className="empty">No open services found for the current filters.</p>
+          ) : (
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              {servicesByIp.map(({ ip, services }) => (
+                <div
+                  key={ip}
+                  style={{
+                    padding: "12px",
+                    borderRadius: "12px",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(255,255,255,0.04)",
+                  }}
+                >
+                  <div className="mono" style={{ fontWeight: 800, marginBottom: 6 }}>
+                    {ip}
+                  </div>
+                  <div>
+                    <b>{services.length}</b> open service(s): {services.join(", ")}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="table-wrap">
           <table className="table">
             <thead>
@@ -247,7 +282,6 @@ export default function NmapPage() {
           </table>
         </div>
 
-        {/* Pager */}
         <div className="pager">
           <button className="btn btn-secondary" onClick={handlePrev} disabled={page === 1}>
             Prev
