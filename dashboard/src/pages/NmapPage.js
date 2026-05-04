@@ -19,10 +19,10 @@ function SeverityBadge({ severity }) {
       s === "critical"
         ? "rgba(239,68,68,0.25)"
         : s === "high"
-        ? "rgba(249,115,22,0.22)"
-        : s === "medium"
-        ? "rgba(234,179,8,0.20)"
-        : "rgba(34,197,94,0.18)",
+          ? "rgba(249,115,22,0.22)"
+          : s === "medium"
+            ? "rgba(234,179,8,0.20)"
+            : "rgba(34,197,94,0.18)",
   };
 
   return <span style={style}>{label}</span>;
@@ -95,9 +95,29 @@ export default function NmapPage() {
   };
 
   const filteredRows = useMemo(() => {
-    if (severity === "All") return rows;
-    const sv = severity.toLowerCase();
-    return rows.filter((r) => String(r.severity || "").toLowerCase() === sv);
+    let result = rows;
+
+    if (severity !== "All") {
+      const sv = severity.toLowerCase();
+      result = result.filter((r) => String(r.severity || "").toLowerCase() === sv);
+    }
+
+    const seen = new Set();
+
+    return result.filter((r) => {
+      const key = [
+        r.host || r.target || "",
+        r.port || "",
+        r.proto || "",
+        r.state || "",
+        r.service || "",
+      ].join("|");
+
+      if (seen.has(key)) return false;
+
+      seen.add(key);
+      return true;
+    });
   }, [rows, severity]);
 
   const servicesByIp = useMemo(() => {
@@ -119,10 +139,27 @@ export default function NmapPage() {
         grouped[ip].add(serviceLabel);
       });
 
+    const servicePriority = {
+      ftp: 1,
+      ssh: 2,
+      http: 3,
+      https: 4,
+      mysql: 5,
+      postgresql: 6,
+      upnp: 7,
+    };
+
+    const getServicePriority = (label) => {
+      const name = String(label).split(" ")[0].toLowerCase();
+      return servicePriority[name] || 99;
+    };
+
     return Object.entries(grouped)
       .map(([ip, services]) => ({
         ip,
-        services: Array.from(services),
+        services: Array.from(services).sort(
+          (a, b) => getServicePriority(a) - getServicePriority(b)
+        ),
       }))
       .sort((a, b) => b.services.length - a.services.length);
   }, [filteredRows]);
@@ -135,7 +172,7 @@ export default function NmapPage() {
       <div className="card">
         <div className="card-header">
           <div>
-            <h2 className="card-title">🧭 NMAP Findings</h2>
+            <h2 className="card-title">🧭 Network Exposure Findings</h2>
             <div className="card-subtitle">
               Open services grouped by host/IP, with detailed scan results below.
             </div>
@@ -180,13 +217,13 @@ export default function NmapPage() {
             <option value="upnp">upnp</option>
           </select>
 
-          <select className="select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
+          {/* <select className="select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
             <option value="All">All Severity</option>
             <option value="critical">critical</option>
             <option value="high">high</option>
             <option value="medium">medium</option>
             <option value="low">low</option>
-          </select>
+          </select> */}
 
           <button className="btn btn-secondary" type="button" onClick={clear}>
             Clear
@@ -203,7 +240,7 @@ export default function NmapPage() {
         </div>
 
         <div className="card" style={{ marginBottom: 18 }}>
-          <h3 className="card-title">Multi-Service IP Summary</h3>
+          <h3 className="card-title">Exposed Services By Host</h3>
           <div className="card-subtitle">
             This groups open services by IP so analysts can quickly identify hosts exposing multiple services.
           </div>
@@ -222,8 +259,29 @@ export default function NmapPage() {
                     background: "rgba(255,255,255,0.04)",
                   }}
                 >
-                  <div className="mono" style={{ fontWeight: 800, marginBottom: 6 }}>
-                    {ip}
+                  <div
+                    className="mono"
+                    style={{
+                      fontWeight: 800,
+                      marginBottom: 6,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                    }}
+                  >
+                    <span>{ip}</span>
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        padding: "3px 9px",
+                        borderRadius: "999px",
+                        border: "1px solid rgba(56,189,248,0.35)",
+                        background: "rgba(56,189,248,0.12)",
+                        color: "#e0f2fe",
+                      }}
+                    >
+                      {services.length} Services
+                    </span>
                   </div>
                   <div>
                     <b>{services.length}</b> open service(s): {services.join(", ")}
@@ -246,7 +304,7 @@ export default function NmapPage() {
                 <th style={{ width: 80 }}>PROTO</th>
                 <th style={{ width: 110 }}>STATE</th>
                 <th style={{ width: 130 }}>SERVICE</th>
-                <th style={{ width: 140 }}>SEVERITY</th>
+                {/* <th style={{ width: 140 }}>SEVERITY</th> */}
                 <th>EXTRA</th>
               </tr>
             </thead>
@@ -254,7 +312,7 @@ export default function NmapPage() {
             <tbody>
               {filteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="empty">
+                  <td colSpan={9} className="empty">
                     No NMAP findings match your filters.
                   </td>
                 </tr>
@@ -270,7 +328,7 @@ export default function NmapPage() {
                     <td>{r.state}</td>
                     <td>{r.service}</td>
                     <td>
-                      <SeverityBadge severity={r.severity} />
+                      {/* <SeverityBadge severity={r.severity} /> */}
                     </td>
                     <td className="mono" title={r.extra || ""}>
                       {r.extra || ""}

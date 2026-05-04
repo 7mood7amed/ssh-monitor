@@ -45,20 +45,24 @@ def _safe_int(x: Any, default: int = 0) -> int:
         return default
 
 
+# =============================
+# CUSTOM INTERNAL CLASSIFICATION
+# =============================
+
+# Only Raven is internal
+INTERNAL_IPS = {
+    "192.168.56.104",  # Raven VM
+    "127.0.0.1",
+    "::1"
+}
+
 def is_internal_ip(ip: str) -> bool:
     if not ip:
-        return True
-    try:
-        addr = ipaddress.ip_address(ip)
-        return (
-            addr.is_loopback
-            or addr.is_private
-            or addr.is_link_local
-            or addr.is_reserved
-        )
-    except Exception:
-        ip_l = str(ip).strip().lower()
-        return ip_l in {"localhost", "::1"}
+        return False
+
+    ip = str(ip).strip()
+
+    return ip in INTERNAL_IPS
 
 
 def classify_ip_scope(ip: str) -> str:
@@ -354,7 +358,7 @@ class RavenAIEngine:
                 probable_patterns.append("sensitive exposed service")
 
             if ip_scope == "internal":
-                assessment = "internal/test activity"
+                assessment = "trusted local Raven host"
             else:
                 assessment = "external suspicious source"
 
@@ -393,7 +397,6 @@ class RavenAIEngine:
     def compute_risk(self, facts: Dict[str, Any], correlations: Dict[str, Any]) -> Dict[str, Any]:
         score = 0
         reasons: List[str] = []
-
         pr = facts.get("alert_priority_counts", {})
         critical_alerts = _safe_int(pr.get("critical"))
         high_alerts = _safe_int(pr.get("high"))
@@ -436,12 +439,34 @@ class RavenAIEngine:
             score += multi_source_count * 7
             reasons.append(f"{multi_source_count} IP(s) active across multiple sources")
 
+        # TSHARK + correlation intelligence
+        alert_titles = [str(a.get("title") or "") for a in facts.get("alerts", [])]
+
+        if any("Reconnaissance Campaign Detected" in t for t in alert_titles):
+            score += 40
+            reasons.append("correlated reconnaissance campaign detected")
+
+        if any("TShark: Possible ICMP Sweep" in t for t in alert_titles):
+            score += 15
+            reasons.append("ICMP reconnaissance activity observed")
+
+        if any("TShark: Possible DNS Beaconing" in t for t in alert_titles):
+            score += 20
+            reasons.append("DNS beaconing-style activity observed")
+
+        if any("TShark: Suspicious HTTP Path Probing" in t for t in alert_titles):
+            score += 20
+            reasons.append("HTTP path probing detected")
+
+        # Keep score readable
+        score = min(score, 100)
+
         level = "low"
-        if score >= 70:
+        if score >= 85:
             level = "critical"
-        elif score >= 40:
+        elif score >= 60:
             level = "high"
-        elif score >= 20:
+        elif score >= 30:
             level = "medium"
 
         return {
@@ -454,12 +479,14 @@ class RavenAIEngine:
         top_activity = correlations.get("top_activity_ip")
         top_external = correlations.get("top_external_ip")
         top_internal = correlations.get("top_internal_ip")
-
+        recent_alerts = facts.get("alerts", [])[:10]
+        attack_stages = self.infer_attack_stages(recent_alerts)
         return {
             "risk": risk,
             "top_activity": top_activity,
             "top_external": top_external,
             "top_internal": top_internal,
+            "attack_stages": attack_stages,
             "totals": {
                 "ssh_failures": sum(_safe_int(x.get("count")) for x in facts.get("ssh_failures", [])),
                 "ftp_failures": sum(_safe_int(x.get("count")) for x in facts.get("ftp_failures", [])),
@@ -492,6 +519,60 @@ class RavenAIEngine:
                 for x in facts.get("alerts", [])[:10]
             ],
         }
+    
+
+    def infer_attack_stages(self, recent_alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        titles = [str(a.get("title") or "") for a in recent_alerts]
+
+        stages = []
+
+        if any("Nmap" in t or "Port Scan" in t for t in titles):
+            stages.append({
+                "stage": "Reconnaissance",
+                "evidence": "Port scan or exposed-service discovery activity was observed.",
+            })
+
+        if any("ICMP Sweep" in t for t in titles):
+            stages.append({
+                "stage": "Host Discovery",
+                "evidence": "ICMP sweep behavior suggests host discovery or network mapping.",
+            })
+
+        if any("DNS Beaconing" in t for t in titles):
+            stages.append({
+                "stage": "Command-and-Control Indicator",
+                "evidence": "DNS query bursts may indicate beaconing-style or abnormal lookup behavior.",
+            })
+
+        if any("HTTP Path Probing" in t or "Sensitive Path Probing" in t for t in titles):
+            stages.append({
+                "stage": "Web Enumeration",
+                "evidence": "Suspicious HTTP requests to sensitive paths were detected.",
+            })
+
+        if any("SSH Brute Force" in t or "FTP Brute Force" in t for t in titles):
+            stages.append({
+                "stage": "Initial Access Attempt",
+                "evidence": "Repeated authentication failures suggest brute-force login attempts.",
+            })
+
+        if any("Reconnaissance Campaign Detected" in t for t in titles):
+            stages.append({
+                "stage": "Campaign Correlation",
+                "evidence": "Multiple detections were grouped into a reconnaissance campaign.",
+            })
+
+        confidence = "low"
+        if len(stages) >= 4:
+            confidence = "high"
+        elif len(stages) >= 2:
+            confidence = "medium"
+
+        return {
+            "stage_count": len(stages),
+            "confidence": confidence,
+            "stages": stages,
+        }
 
     def generate_fallback_summary(self, report_data: Dict[str, Any]) -> str:
         risk = report_data["risk"]["level"]
@@ -499,6 +580,9 @@ class RavenAIEngine:
         top_activity = report_data.get("top_activity")
         top_external = report_data.get("top_external")
         top_internal = report_data.get("top_internal")
+
+        recent_alerts = report_data.get("recent_alerts", [])
+        alert_titles = [a.get("title", "") for a in recent_alerts]
 
         lines = [
             f"Overall system risk is {risk.upper()}.",
@@ -533,15 +617,50 @@ class RavenAIEngine:
                 f"multiple services such as SSH, FTP, web, or Nmap."
             )
 
-        recent_alerts = report_data.get("recent_alerts", [])
+        has_campaign = any("Reconnaissance Campaign Detected" in t for t in alert_titles)
+        has_icmp = any("ICMP Sweep" in t for t in alert_titles)
+        has_dns = any("DNS Beaconing" in t for t in alert_titles)
+        has_http = any("HTTP Path Probing" in t for t in alert_titles)
+
+        if has_campaign or (has_icmp and has_dns and has_http):
+            chain_steps = []
+
+            if has_icmp:
+                chain_steps.append("ICMP sweep activity suggests reconnaissance or host discovery")
+            if has_dns:
+                chain_steps.append("DNS query bursts suggest beaconing-style or abnormal lookup behavior")
+            if has_http:
+                chain_steps.append("HTTP path probing suggests web discovery against sensitive paths")
+            if has_campaign:
+                chain_steps.append("the correlation engine grouped these indicators into a reconnaissance campaign")
+
+            lines.append(
+                "Attack-chain hypothesis: "
+                + " -> ".join(chain_steps)
+                + "."
+            )
+
+        attack_stages = report_data.get("attack_stages", {})
+        stages = attack_stages.get("stages", [])
+
+        if stages:
+            stage_names = " -> ".join([s["stage"] for s in stages])
+            lines.append(
+                f"Campaign assessment: {attack_stages.get('stage_count', len(stages))} attack stage(s) were observed "
+                f"with {attack_stages.get('confidence', 'low').upper()} confidence: {stage_names}."
+            )
+
         if recent_alerts:
-            top_titles = ", ".join([a["title"] for a in recent_alerts[:3] if a.get("title")])
+            top_titles = ", ".join(
+                [a["title"] for a in recent_alerts[:3] if a.get("title")]
+            )
             if top_titles:
                 lines.append(f"Recent alerts include: {top_titles}.")
 
         lines.append(
-            "This summary is based on structured database evidence from SSH, FTP, web, Nmap, and alert records."
+            "This summary is based on structured database evidence from SSH, FTP, web, Nmap, TSHARK packet events, and alert records."
         )
+
         return " ".join(lines)
 
     def generate_llm_summary(self, report_data: Dict[str, Any]) -> str:

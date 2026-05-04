@@ -10,6 +10,7 @@ import FtpLogsPage from "./pages/FtpLogsPage";
 import AlertsPage from "./pages/AlertsPage";
 import NmapPage from "./pages/NmapPage";
 import AIInsights from "./components/AIInsights";
+import NetworkEvents from "./pages/NetworkEvents";
 
 import "./App.css";
 
@@ -39,6 +40,7 @@ function App() {
           <Route path="/alerts" element={<AlertsPage refreshTrigger={refreshTrigger} />} />
           <Route path="/nmap" element={<NmapPage />} />
           <Route path="/ai" element={<AIInsights refreshTrigger={refreshTrigger} />} />
+          <Route path="/network-events" element={<NetworkEvents />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

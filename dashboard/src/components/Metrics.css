@@ -61,3 +61,11 @@
   font-size: 0.9rem;
   color: rgba(226, 232, 240, 0.65);
 }
+
+.metric-desc {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(226, 232, 240, 0.62);
+  line-height: 1.35;
+}

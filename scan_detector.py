@@ -3,7 +3,6 @@ import os
 import subprocess
 import time
 from collections import defaultdict, deque
-from datetime import datetime
 
 import psycopg2
 
@@ -12,6 +11,7 @@ INTERFACE = os.environ.get("SCAN_INTERFACE", "enp0s8")
 WINDOW_SECONDS = int(os.environ.get("SCAN_WINDOW_SECONDS", "20"))
 PORT_THRESHOLD = int(os.environ.get("SCAN_PORT_THRESHOLD", "10"))
 DEDUPE_MINUTES = int(os.environ.get("SCAN_DEDUPE_MINUTES", "10"))
+HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("TSHARK_HEARTBEAT_INTERVAL", "30"))
 
 DB_NAME = os.environ.get("DB_NAME", "logdb")
 DB_USER = os.environ.get("DB_USER", "hero")
@@ -32,6 +32,25 @@ def get_conn():
     )
 
 
+def update_tshark_heartbeat():
+    conn = get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_status (agent_name, last_heartbeat, status)
+                    VALUES ('TSHARK', NOW(), 'active')
+                    ON CONFLICT (agent_name)
+                    DO UPDATE SET
+                        last_heartbeat = NOW(),
+                        status = 'active';
+                    """
+                )
+    finally:
+        conn.close()
+
+
 def create_scan_alert(scanner_ip, target_ip, ports):
     ports_sorted = sorted(ports, key=lambda p: int(p) if str(p).isdigit() else 999999)
     ports_text = ", ".join(ports_sorted[:25])
@@ -50,7 +69,6 @@ def create_scan_alert(scanner_ip, target_ip, ports):
     try:
         with conn:
             with conn.cursor() as cur:
-                # Prevent duplicate alerts for the same scanner in a short time window
                 cur.execute(
                     """
                     SELECT id
@@ -67,10 +85,7 @@ def create_scan_alert(scanner_ip, target_ip, ports):
 
                 existing = cur.fetchone()
                 if existing:
-                    print(
-                        f"[INFO] Duplicate scan alert suppressed for scanner={scanner_ip}",
-                        flush=True,
-                    )
+                    print(f"[INFO] Duplicate scan alert suppressed for scanner={scanner_ip}", flush=True)
                     return
 
                 cur.execute(
@@ -81,22 +96,11 @@ def create_scan_alert(scanner_ip, target_ip, ports):
                         (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING id;
                     """,
-                    (
-                        source,
-                        priority,
-                        title,
-                        description,
-                        None,
-                        scanner_ip,
-                        target_ip,
-                    ),
+                    (source, priority, title, description, None, scanner_ip, target_ip),
                 )
 
                 alert_id = cur.fetchone()[0]
-                print(
-                    f"[DB] Alert inserted id={alert_id} scanner={scanner_ip} target={target_ip}",
-                    flush=True,
-                )
+                print(f"[DB] Alert inserted id={alert_id} scanner={scanner_ip} target={target_ip}", flush=True)
     finally:
         conn.close()
 
@@ -104,29 +108,22 @@ def create_scan_alert(scanner_ip, target_ip, ports):
 def main():
     cmd = [
         "tshark",
-        "-i",
-        INTERFACE,
+        "-i", INTERFACE,
         "-l",
-        "-Y",
-        "tcp.flags.syn == 1 && tcp.flags.ack == 0",
-        "-T",
-        "fields",
-        "-e",
-        "frame.time_epoch",
-        "-e",
-        "ip.src",
-        "-e",
-        "ip.dst",
-        "-e",
-        "tcp.dstport",
+        "-Y", "tcp.flags.syn == 1 && tcp.flags.ack == 0",
+        "-T", "fields",
+        "-e", "frame.time_epoch",
+        "-e", "ip.src",
+        "-e", "ip.dst",
+        "-e", "tcp.dstport",
     ]
 
     print("[*] Raven tshark scan detector started", flush=True)
     print(f"[*] Interface: {INTERFACE}", flush=True)
-    print(
-        f"[*] Rule: {PORT_THRESHOLD}+ unique ports within {WINDOW_SECONDS}s",
-        flush=True,
-    )
+    print(f"[*] Rule: {PORT_THRESHOLD}+ unique ports within {WINDOW_SECONDS}s", flush=True)
+
+    update_tshark_heartbeat()
+    last_heartbeat = time.time()
 
     process = subprocess.Popen(
         cmd,
@@ -137,18 +134,20 @@ def main():
     )
 
     for line in process.stdout:
+        now = time.time()
+
+        if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+            update_tshark_heartbeat()
+            last_heartbeat = now
+
         parts = line.strip().split()
         if len(parts) < 4:
             continue
 
-        try:
-            src_ip = parts[1]
-            dst_ip = parts[2]
-            dst_port = parts[3]
-        except Exception:
-            continue
+        src_ip = parts[1]
+        dst_ip = parts[2]
+        dst_port = parts[3]
 
-        now = time.time()
         q = events[src_ip]
         q.append((now, dst_ip, dst_port))
 
@@ -156,18 +155,16 @@ def main():
             q.popleft()
 
         unique_ports = {port for _, _, port in q}
-        latest_target = dst_ip
 
         if len(unique_ports) >= PORT_THRESHOLD:
             print(
                 f"[ALERT] Possible port scan detected | "
-                f"scanner={src_ip} target={latest_target} "
+                f"scanner={src_ip} target={dst_ip} "
                 f"unique_ports={len(unique_ports)} ports={sorted(unique_ports)}",
                 flush=True,
             )
 
-            create_scan_alert(src_ip, latest_target, unique_ports)
-
+            create_scan_alert(src_ip, dst_ip, unique_ports)
             q.clear()
 
 

@@ -56,6 +56,7 @@
     grid-template-columns: 1fr;
   }
 }
+
 /* Inputs */
 .input,
 .select {
@@ -280,6 +281,7 @@
   background: rgba(239, 68, 68, 0.12);
   color: rgba(226, 232, 240, 0.92);
 }
+
 /* ===== SSH EVENT badges (match FTP badge style) ===== */
 .badge-login_success {
   border-color: rgba(34, 197, 94, 0.45);
@@ -345,9 +347,74 @@
   padding: 12px;
   color: rgba(226, 232, 240, 0.9);
 }
+
 /* Alerts responsive layout */
 @media (max-width: 1100px) {
   .alerts-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+.alert-case-box {
+  margin-top: 14px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.alert-case-title {
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #e2e8f0;
+}
+
+.alert-case-text {
+  line-height: 1.5;
+  font-size: 13px;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.alert-case-chips {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.alert-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.35);
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.evidence-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.evidence-tag {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+@media (max-width: 1100px) {
+  .alerts-layout {
     grid-template-columns: 1fr !important;
   }
 }

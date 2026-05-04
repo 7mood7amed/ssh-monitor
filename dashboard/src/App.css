@@ -1,12 +1,10 @@
 body {
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
 
-  
-  background: linear-gradient(
-    180deg,
-    #0f172a 0%,
-    #020617 100%
-  );
+
+  background: linear-gradient(180deg,
+      #0f172a 0%,
+      #020617 100%);
 
   margin: 0;
   color: #e2e8f0;
@@ -14,6 +12,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
 .header {
   background-color: #0a3d62;
   color: white;
@@ -109,4 +108,47 @@ body {
 .severity-medium {
   color: orange;
   font-weight: 600;
+}
+
+.content {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.home-hero-card {
+  margin: 8px auto 22px;
+  padding: 22px 26px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(2, 6, 23, 0.96));
+  border: 1px solid rgba(56, 189, 248, 0.20);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.22);
+}
+
+.home-kicker {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #38bdf8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.home-hero-card h2 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  color: #f8fafc;
+}
+
+.home-hero-card p {
+  margin: 0;
+  max-width: 780px;
+  color: rgba(226, 232, 240, 0.72);
+  line-height: 1.6;
+}
+
+.home-section {
+  margin-top: 20px;
 }

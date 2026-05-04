@@ -58,12 +58,14 @@ ALLOWED_VSFTPD_PREFIX = "/var/log/vsftpd.log"
 
 
 def allowed_logs_where_sql(alias: str = "l") -> str:
-    """
-    Returns SQL condition limiting rows to allowed sources only.
-    Uses LIKE prefix matching so it includes rotated logs (.1, .2, etc).
-    """
     col = f"{alias}.source"
-    return f"({col} LIKE %s OR {col} LIKE %s OR {col} LIKE %s OR {col} LIKE %s)"
+    return f"""(
+        {col} LIKE %s OR
+        {col} LIKE %s OR
+        {col} LIKE %s OR
+        {col} LIKE %s OR
+        {col} = '/usr/bin/tshark'
+    )"""
 
 
 def allowed_logs_where_params() -> Tuple[str, str, str, str]:
@@ -224,14 +226,10 @@ _DB_PORTS = {3306, 5432, 6379, 9200, 27017}
 def _is_internal_ip_quick(ip: str) -> bool:
     if not ip:
         return False
-    try:
-        addr = ipaddress.ip_address(ip)
-        for cidr in _INTERNAL_NETS:
-            if addr in ipaddress.ip_network(cidr, strict=False):
-                return True
-        return False
-    except Exception:
-        return False
+
+    ip = str(ip).strip()
+
+    return ip in {"192.168.56.104", "127.0.0.1", "::1"}
 
 def compute_ssh_severity(event_type: str, outcome: str) -> str:
     et = (event_type or "").lower()
@@ -309,14 +307,10 @@ _INTERNAL_NETS_NMAP = [
 def _is_internal_ip_nmap(ip: str) -> bool:
     if not ip:
         return False
-    try:
-        addr = ipaddress.ip_address(ip)
-        for cidr in _INTERNAL_NETS_NMAP:
-            if addr in ipaddress.ip_network(cidr, strict=False):
-                return True
-        return False
-    except Exception:
-        return False
+
+    ip = str(ip).strip()
+
+    return ip in {"192.168.56.104", "127.0.0.1", "::1"}
 
 def compute_nmap_severity(host: str, state: str, service: str, port: int) -> str:
     """
@@ -421,14 +415,14 @@ def _parse_apache_access_line(line: str, fallback_time: Optional[datetime]) -> O
 @app.route("/api/agents", methods=["GET"])
 def get_agents():
     """
-    Returns only the collector agents:
-      SSH / FTP / APACHE / NMAP
+    Returns collector agents:
+      SSH / FTP / APACHE / NMAP / TSHARK
     """
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        allowed_agents = ["SSH", "FTP", "APACHE", "NMAP"]
+        allowed_agents = ["SSH", "FTP", "APACHE", "NMAP", "TSHARK"]
 
         cur.execute(
             """
@@ -439,6 +433,7 @@ def get_agents():
             """,
             (allowed_agents,),
         )
+
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -448,12 +443,20 @@ def get_agents():
         def compute_status(agent: str, last_hb: Optional[datetime]) -> str:
             if not last_hb:
                 return "inactive"
+
             age = now - last_hb
 
             if agent == "NMAP":
                 if age <= timedelta(minutes=15):
                     return "active"
                 if age <= timedelta(minutes=60):
+                    return "warning"
+                return "inactive"
+
+            if agent == "TSHARK":
+                if age <= timedelta(minutes=2):
+                    return "active"
+                if age <= timedelta(minutes=5):
                     return "warning"
                 return "inactive"
 
@@ -476,6 +479,7 @@ def get_agents():
             )
 
         return jsonify(agents)
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -489,7 +493,8 @@ def get_metrics():
     """
     totalLogs: count of allowed-source rows in public.logs
     activeAgents: heartbeat in last 120 seconds
-    anomalies: (ssh login_fail + web suspicious status) in last 24h
+    anomalies: ssh login_fail + web suspicious status in last 24h
+    passiveScans: tshark scan alerts
     """
     try:
         conn = get_db_connection()
@@ -510,9 +515,23 @@ def get_metrics():
 
         cur.execute(
             """
-            SELECT COUNT(*)
+            SELECT
+            SUM(
+                CASE
+                WHEN agent_name = 'NMAP'
+                    AND last_heartbeat >= NOW() - INTERVAL '15 minutes'
+                THEN 1
+                WHEN agent_name = 'TSHARK'
+                    AND last_heartbeat >= NOW() - INTERVAL '2 minutes'
+                THEN 1
+                WHEN agent_name NOT IN ('NMAP', 'TSHARK')
+                    AND last_heartbeat >= NOW() - INTERVAL '5 minutes'
+                THEN 1
+                ELSE 0
+                END
+            )
             FROM public.agent_status
-            WHERE last_heartbeat >= NOW() - INTERVAL '120 seconds';
+            WHERE agent_name IN ('SSH', 'FTP', 'APACHE', 'NMAP', 'TSHARK');
             """
         )
         active_agents = cur.fetchone()[0] or 0
@@ -536,22 +555,48 @@ def get_metrics():
               AND (
                 l.message ~* '\"\\s+(401|403|404|429|5\\d\\d)\\s+'
                 OR l.message ILIKE %s
-                OR l.message ILIKE %s
+            OR l.message ILIKE %s
+            OR l.message ILIKE %s
+            OR l.message ILIKE %s
+            OR l.message ILIKE %s
               )
               AND l.log_time >= NOW() - INTERVAL '24 hours';
             """,
-            allowed_params + [f"{ALLOWED_APACHE_ACCESS_PREFIX}%", "%/phpmyadmin/%", "%/phppgadmin/%"],
+            allowed_params + [
+                f"{ALLOWED_APACHE_ACCESS_PREFIX}%",
+                "%/admin%",
+                "%/login%",
+                "%/phpmyadmin%",
+                "%/phppgadmin%",
+                "%/.env%",
+            ],
         )
         web_anom = cur.fetchone()[0] or 0
 
-        anomalies = int(ssh_anom) + int(web_anom)
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM public.alerts
+            WHERE source = 'tshark'
+              AND created_at >= NOW() - INTERVAL '24 hours';
+            """
+        )
+        passive_scans = cur.fetchone()[0] or 0
+
+        anomalies = int(ssh_anom) + int(web_anom) + int(passive_scans)
 
         cur.close()
         conn.close()
 
         return jsonify(
-            {"totalLogs": int(total_logs), "activeAgents": int(active_agents), "anomalies": int(anomalies)}
+            {
+                "totalLogs": int(total_logs),
+                "activeAgents": int(active_agents),
+                "anomalies": int(anomalies),
+                "passiveScans": int(passive_scans),
+            }
         )
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -602,8 +647,13 @@ def get_chart_data():
 @app.route("/api/logs", methods=["GET"])
 def get_logs():
     """
-    SSH Logs tab (raw logs from public.logs; auth.log only).
-    Now returns DB-backed severity (l.severity).
+    Logs endpoint.
+
+    Default:
+    - Shows SSH/auth logs only.
+
+    With agent_name:
+    - Shows logs for that specific agent, including TSHARK.
     """
     try:
         page = _safe_int(request.args.get("page"), 1, min_value=1)
@@ -612,23 +662,32 @@ def get_logs():
 
         q = (request.args.get("q") or "").strip()
         source_filter = (request.args.get("source") or "").strip()
+        agent_filter = (request.args.get("agent_name") or "").strip().upper()
         sev_param = normalize_sev_param(request.args.get("severity") or "")
         dt_from = _parse_dt_param(request.args.get("from"))
         dt_to = _parse_dt_param(request.args.get("to"))
 
         sort = (request.args.get("sort") or "log_time").strip().lower()
         order = (request.args.get("order") or "desc").strip().lower()
+
         if sort not in {"log_time", "source"}:
             sort = "log_time"
         if order not in {"asc", "desc"}:
             order = "desc"
 
-        where = [allowed_logs_where_sql("l"), "l.source LIKE %s"]
-        params: List[Any] = list(allowed_logs_where_params()) + [f"{ALLOWED_AUTH_PREFIX}%"]
+        # Important:
+        # If agent_name is provided, do NOT use allowed_logs_where_sql(),
+        # because it excludes TSHARK source /usr/bin/tshark.
+        if agent_filter:
+            where = ["UPPER(l.agent_name) = %s"]
+            params: List[Any] = [agent_filter]
+        else:
+            where = [allowed_logs_where_sql("l"), "l.source LIKE %s"]
+            params: List[Any] = list(allowed_logs_where_params()) + [f"{ALLOWED_AUTH_PREFIX}%"]
 
         if q:
-            where.append("(l.message ILIKE %s OR l.source ILIKE %s)")
-            params.extend([f"%{q}%", f"%{q}%"])
+            where.append("(l.message ILIKE %s OR l.source ILIKE %s OR l.agent_name ILIKE %s)")
+            params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
 
         if source_filter:
             where.append("l.source ILIKE %s")
@@ -639,6 +698,7 @@ def get_logs():
             params.append(sev_param)
 
         _apply_time_range(where, params, "l.log_time", dt_from, dt_to)
+
         where_sql = " AND ".join(where)
 
         conn = get_db_connection()
@@ -656,7 +716,12 @@ def get_logs():
 
         cur.execute(
             f"""
-            SELECT l.log_time, l.source, l.message, l.agent_name, COALESCE(l.severity,'LOW') AS severity
+            SELECT
+                l.log_time,
+                l.source,
+                l.message,
+                l.agent_name,
+                COALESCE(l.severity,'LOW') AS severity
             FROM public.logs l
             WHERE {where_sql}
             ORDER BY l.{sort} {order}
@@ -664,6 +729,7 @@ def get_logs():
             """,
             params + [limit, offset],
         )
+
         rows = cur.fetchall()
 
         cur.close()
@@ -681,10 +747,16 @@ def get_logs():
         ]
 
         total_pages = (total + limit - 1) // limit if total else 1
-        return jsonify({"logs": logs, "total": total, "totalPages": total_pages, "page": page})
+
+        return jsonify({
+            "logs": logs,
+            "total": total,
+            "totalPages": total_pages,
+            "page": page
+        })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 # -----------------------------
 # API: SSH structured events

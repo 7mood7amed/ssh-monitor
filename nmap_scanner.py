@@ -71,7 +71,7 @@ def run_nmap_to_xml(xml_path: str, target: str) -> None:
         raise ValueError(f"Target '{target}' not allowed. Allowed: {sorted(allowed)}")
 
     # Fast scan. Keep your options controlled.
-cmd = ["sudo", "nmap", "-sS", "-T4", "-F", target, "-oX", xml_path]
+cmd = ["nmap", "-sS", "-T4", "-F", target, "-oX", xml_path]
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,

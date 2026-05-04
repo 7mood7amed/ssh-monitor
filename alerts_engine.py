@@ -28,6 +28,9 @@ from typing import Optional, List, Tuple, Dict
 import psycopg2
 from collections import Counter
 
+def extract_first_ipv4(text: str) -> str | None:
+    m = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text or "")
+    return m.group(0) if m else None
 
 DB_CONFIG = {
     "dbname": "logdb",
@@ -42,6 +45,8 @@ DB_CONFIG = {
 # -------------------------------
 BRUTE_FORCE_WINDOW_SECONDS = 120
 BRUTE_FORCE_THRESHOLD = 5
+TSHARK_ANOMALY_WINDOW_SECONDS = 600
+TSHARK_ANOMALY_DEDUPE_MINUTES = 5
 
 #  cooldown for SSH + FTP brute force grouping
 BRUTE_FORCE_COOLDOWN_MINUTES = 10
@@ -57,7 +62,7 @@ NMAP_DEDUPE_MINUTES = 60
 # -------------------------------
 # Web traffic alert tunables
 # -------------------------------
-WEB_WINDOW_SECONDS = 60
+WEB_WINDOW_SECONDS = 300
 WEB_DEDUPE_MINUTES = 5
 
 WEB_BURST_THRESHOLD = 25
@@ -167,6 +172,20 @@ def _update_alert_last_event_time(cur, alert_id: int, new_last_event_time: datet
         (new_last_event_time, alert_id),
     )
 
+def _update_alert_ip_if_missing(cur, alert_id: int, ip_address: str | None):
+    if not ip_address:
+        return
+
+    cur.execute(
+        """
+        UPDATE alerts
+        SET ip_address = %s
+        WHERE id = %s
+          AND (ip_address IS NULL OR ip_address = '')
+        """,
+        (ip_address, alert_id),
+    )
+
 
 def _append_alert_description(cur, alert_id: int, extra_line: str):
     """
@@ -253,11 +272,30 @@ def brute_force_ftp_rule(cur):
 
             # If alert is active and within cooldown, append/link instead of new alert
             if (status or "").lower() != "resolved" and _within_cooldown(created_at):
+                new_count = 0
+                if last_event_time is not None:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM ssh_events
+                        WHERE ip = %s
+                        AND COALESCE(username, '(unknown)') = %s
+                        AND event_type = 'login_fail'
+                        AND outcome = 'fail'
+                        AND event_time > %s
+                        AND event_time <= %s
+                        """,
+                        (ip, user_key, last_event_time, last_seen),
+                    )
+                    new_count = int(cur.fetchone()[0] or 0)
+                else:
+                    new_count = int(fail_count or 0)
+
                 _update_alert_last_event_time(cur, int(alert_id), last_seen)
                 _append_alert_description(
                     cur,
                     int(alert_id),
-                    f"[grouped] New FTP fails detected: +{fail_count} (last_seen={last_seen})",
+                    f"[grouped] New SSH fails detected: +{new_count} (last_seen={last_seen})",
                 )
 
                 for feid in (ftp_event_ids or []):
@@ -822,6 +860,176 @@ def web_scan_rule(cur):
 
 
 # -------------------------------
+# Rule 7: TSHARK protocol anomaly alerts
+# -------------------------------
+def tshark_protocol_anomaly_rule(cur):
+    cur.execute(
+        """
+        SELECT id, log_time, message, severity
+        FROM logs
+        WHERE agent_name = 'TSHARK'
+          AND message ILIKE %s
+          AND log_time >= (NOW() AT TIME ZONE 'UTC') - (%s || ' seconds')::interval
+        ORDER BY log_time DESC
+        LIMIT 500
+        """,
+        ("%[ANOMALY:%", TSHARK_ANOMALY_WINDOW_SECONDS),
+    )
+
+    rows = cur.fetchall()
+
+    for log_id, log_time, message, severity in rows:
+        msg = message or ""
+        extracted_ip = extract_first_ipv4(msg)
+
+        if "Possible ICMP sweep" in msg:
+            title = "TShark: Possible ICMP Sweep"
+            description = "Repeated ICMP traffic detected, indicating possible ping sweep or reconnaissance activity."
+            priority = "high"
+
+        elif "Possible DNS beaconing" in msg:
+            title = "TShark: Possible DNS Beaconing"
+            description = "Repeated DNS queries detected, indicating possible DNS beaconing or abnormal query burst."
+            priority = "high"
+
+        elif "Suspicious HTTP path probing" in msg:
+            title = "TShark: Suspicious HTTP Path Probing"
+            description = "Suspicious HTTP path request detected at packet level, such as /admin, /login, or similar probing behavior."
+            priority = "high"
+
+        else:
+            title = "TShark: Network Protocol Anomaly"
+            description = "A protocol-level anomaly was detected by the TShark network sensor."
+            priority = severity or "medium"
+
+        cur.execute(
+            """
+            SELECT 1
+            FROM alert_log_links allk
+            JOIN alerts a ON a.id = allk.alert_id
+            WHERE allk.log_type = 'logs'
+              AND allk.log_id = %s
+              AND a.title = %s
+            LIMIT 1
+            """,
+            (int(log_id), title),
+        )
+
+        if cur.fetchone():
+            continue
+
+        cur.execute(
+            """
+            SELECT id
+            FROM alerts
+            WHERE title = %s
+              AND source = 'tshark'
+              AND status <> 'resolved'
+              AND created_at >= NOW() - (%s || ' minutes')::interval
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (title, TSHARK_ANOMALY_DEDUPE_MINUTES),
+        )
+
+        existing = cur.fetchone()
+
+        if existing:
+            alert_id = int(existing[0])
+            _update_alert_last_event_time(cur, alert_id, log_time)
+            _update_alert_ip_if_missing(cur, alert_id, extracted_ip)
+
+            # Removed noisy grouped description to avoid alert spam
+            pass
+        else:
+            alert_id = create_alert(
+                cur,
+                priority=priority,
+                title=title,
+                description=f"{description}\nEvidence: {msg}",
+                source="tshark",
+                user_name=None,
+                ip_address=extracted_ip,
+                file_target="network",
+                last_event_time=log_time,
+            )
+
+        link_alert(cur, int(alert_id), "logs", int(log_id))
+
+
+
+# -------------------------------
+# Rule 8: Multi-stage Recon Correlation
+# -------------------------------
+# -------------------------------
+# Rule 8: Multi-stage Recon Correlation
+# -------------------------------
+def recon_campaign_rule(cur):
+    cur.execute(
+        """
+        SELECT id, title, created_at
+        FROM alerts
+        WHERE source = 'tshark'
+          AND created_at >= NOW() - INTERVAL '10 minutes'
+        ORDER BY created_at DESC
+        """
+    )
+
+    rows = cur.fetchall()
+
+    titles = [title for _alert_id, title, _created_at in rows]
+
+    has_icmp = any("ICMP Sweep" in t for t in titles)
+    has_dns = any("DNS Beaconing" in t for t in titles)
+    has_http = any("HTTP Path" in t or "HTTP Path Probing" in t for t in titles)
+
+    if not (has_icmp and has_dns and has_http):
+        return
+
+    title = "Reconnaissance Campaign Detected"
+
+    cur.execute(
+        """
+        SELECT 1
+        FROM alerts
+        WHERE title = %s
+          AND source = 'correlation'
+          AND status <> 'resolved'
+          AND created_at >= NOW() - INTERVAL '10 minutes'
+        LIMIT 1
+        """,
+        (title,),
+    )
+
+    if cur.fetchone():
+        return
+
+    description = (
+        "Multi-stage reconnaissance activity detected by the TSHARK sensor. "
+        "The system observed ICMP sweep behavior, DNS query burst activity, "
+        "and suspicious HTTP path probing within the same time window."
+    )
+
+    alert_id = create_alert(
+        cur,
+        priority="critical",
+        title=title,
+        description=description,
+        source="correlation",
+        ip_address=None,
+        file_target="network",
+        last_event_time=datetime.utcnow(),
+    )
+
+    for related_alert_id, related_title, _created_at in rows:
+        _append_alert_description(
+            cur,
+            int(alert_id),
+            f"[related alert] {related_title} alert_id={related_alert_id}"
+        )
+
+
+# -------------------------------
 # Run
 # -------------------------------
 def main():
@@ -834,6 +1042,8 @@ def main():
                 brute_force_ssh_rule(cur)
 
                 web_scan_rule(cur)
+                tshark_protocol_anomaly_rule(cur)
+                recon_campaign_rule(cur)
 
                 mass_delete_rule(cur)
                 critical_rmdir_rule(cur)
