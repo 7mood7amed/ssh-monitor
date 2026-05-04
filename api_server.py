@@ -223,13 +223,27 @@ _SENSITIVE_PORTS = {
 
 _DB_PORTS = {3306, 5432, 6379, 9200, 27017}
 
+DEMO_EXTERNAL_IPS = {
+    # Add Kali / attacker IP here if you want it treated as external
+    # Example: "192.168.56.105",
+}
+
+INTERNAL_IPS = {
+    "192.168.56.104",
+    "127.0.0.1",
+    "::1",
+}
+
 def _is_internal_ip_quick(ip: str) -> bool:
     if not ip:
         return False
 
-    ip = str(ip).strip()
+    ip = str(ip).strip().replace("::ffff:", "")
 
-    return ip in {"192.168.56.104", "127.0.0.1", "::1"}
+    if ip in DEMO_EXTERNAL_IPS:
+        return False
+
+    return ip in INTERNAL_IPS
 
 def compute_ssh_severity(event_type: str, outcome: str) -> str:
     et = (event_type or "").lower()
@@ -305,8 +319,7 @@ _INTERNAL_NETS_NMAP = [
 ]
 
 def _is_internal_ip_nmap(ip: str) -> bool:
-    if not ip:
-        return False
+    return _is_internal_ip_quick(ip)
 
     ip = str(ip).strip()
 

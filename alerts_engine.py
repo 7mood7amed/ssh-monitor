@@ -295,7 +295,7 @@ def brute_force_ftp_rule(cur):
                 _append_alert_description(
                     cur,
                     int(alert_id),
-                    f"[grouped] New SSH fails detected: +{new_count} (last_seen={last_seen})",
+                    f"[grouped] New FTP fails detected: +{new_count} (last_seen={last_seen})",
                 )
 
                 for feid in (ftp_event_ids or []):
@@ -382,11 +382,32 @@ def brute_force_ssh_rule(cur):
 
             # If alert is active and within cooldown, append/link instead of new alert
             if (status or "").lower() != "resolved" and _within_cooldown(created_at):
+                new_count = 0
+
+                if last_event_time is not None:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM ssh_events
+                        WHERE ip = %s
+                        AND COALESCE(username, '(unknown)') = %s
+                        AND event_type = 'login_fail'
+                        AND outcome = 'fail'
+                        AND event_time > %s
+                        AND event_time <= %s
+                        """,
+                        (ip, user_key, last_event_time, last_seen),
+                    )
+                    new_count = int(cur.fetchone()[0] or 0)
+                else:
+                    new_count = int(fail_count or 0)
+
                 _update_alert_last_event_time(cur, int(alert_id), last_seen)
+
                 _append_alert_description(
                     cur,
                     int(alert_id),
-                    f"[grouped] New SSH fails detected: +{fail_count} (last_seen={last_seen})",
+                    f"[grouped] New SSH fails detected: +{new_count} (last_seen={last_seen})",
                 )
 
                 for seid in (ssh_event_ids or []):

@@ -53,14 +53,22 @@ def _safe_int(x: Any, default: int = 0) -> int:
 INTERNAL_IPS = {
     "192.168.56.104",  # Raven VM
     "127.0.0.1",
-    "::1"
+    "::1",
+}
+
+DEMO_EXTERNAL_IPS = {
+    # Add your Kali / attacker machine IP here if needed
+    # Example: "192.168.56.105",
 }
 
 def is_internal_ip(ip: str) -> bool:
     if not ip:
         return False
 
-    ip = str(ip).strip()
+    ip = str(ip).strip().replace("::ffff:", "")
+
+    if ip in DEMO_EXTERNAL_IPS:
+        return False
 
     return ip in INTERNAL_IPS
 
