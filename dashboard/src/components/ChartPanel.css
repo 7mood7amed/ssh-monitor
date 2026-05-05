@@ -1,41 +1,49 @@
-
+/* ── ChartPanel v2 ── */
 .chart-section {
-  margin: 18px auto;
-  width: 90%;
-  max-width: 1100px;
+  margin: 0 0 18px;
+  width: 100%;
 }
-
 
 .chart-section h2 {
-  font-size: 18px;
-  font-weight: 800;
-  color: #e2e8f0;
-  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(0, 212, 255, 0.75);
+  margin: 0 0 10px;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-
-  
-  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.35);
+  gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
 }
-
 
 .chart-card {
-  background: #0f172a;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 14px;
+  background: #0b1221;
+  border: 1px solid rgba(0, 212, 255, 0.10);
+  border-radius: 12px;
   padding: 18px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
 }
 
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: rgba(0, 212, 255, 0.06) !important;
+}
 
 .recharts-default-tooltip {
-  background: rgba(2, 6, 23, 0.95) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
-  border-radius: 10px !important;
+  background: rgba(5, 12, 26, 0.97) !important;
+  border: 1px solid rgba(0, 212, 255, 0.28) !important;
+  border-radius: 8px !important;
   color: #e2e8f0 !important;
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.12) !important;
+  font-size: 13px !important;
 }
 
 .recharts-tooltip-label {
-  color: rgba(226, 232, 240, 0.85) !important;
+  color: #00d4ff !important;
+  font-family: ui-monospace, Consolas, monospace !important;
+  font-size: 12px !important;
+}
+
+.recharts-text {
+  fill: rgba(226, 232, 240, 0.50) !important;
+  font-size: 11px !important;
 }

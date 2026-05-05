@@ -1,21 +1,4 @@
-/* File: dashboard/src/components/AgentStatus.css */
-
-.agent-status-container {
-  width: 95%;
-  margin: 30px auto;
-  background: #fff;
-  padding: 20px 25px;
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-}
-
-.agent-status-container h2 {
-  color: #003366;
-  border-bottom: 2px solid #e5e9f0;
-  padding-bottom: 8px;
-  margin-bottom: 18px;
-}
-
+/* ── AgentStatus v2 ── */
 .agent-table-wrapper {
   overflow-x: auto;
 }
@@ -26,43 +9,109 @@
 }
 
 .agent-table th {
-  background: #004c7f;
-  color: #fff;
-  padding: 10px;
   text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  color: rgba(0, 212, 255, 0.75);
+  background: rgba(0, 212, 255, 0.04);
+  border-bottom: 1px solid rgba(0, 212, 255, 0.10);
+  font-weight: 700;
 }
 
 .agent-table td {
-  padding: 10px;
-  border-bottom: 1px solid #eee;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.05);
+  font-size: 13px;
+  color: #e2e8f0;
+  vertical-align: middle;
+}
+
+.agent-table tr:last-child td {
+  border-bottom: none;
+}
+
+.agent-table tr:hover td {
+  background: rgba(0, 212, 255, 0.025);
 }
 
 .status-badge {
-  display: inline-block;
-  padding: 6px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
   border-radius: 999px;
+  font-size: 11px;
   font-weight: 700;
-  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.status-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .status-active {
-  background: #28a745;
-  color: #fff;
+  background: rgba(0, 255, 136, 0.10);
+  border-color: rgba(0, 255, 136, 0.32);
+  color: #00ff88;
+}
+
+.status-active::before {
+  background: #00ff88;
+  box-shadow: 0 0 5px #00ff88;
+  animation: blink 2.2s ease-in-out infinite;
 }
 
 .status-inactive {
-  background: #dc3545;
-  color: #fff;
+  background: rgba(255, 51, 102, 0.10);
+  border-color: rgba(255, 51, 102, 0.28);
+  color: #ff3366;
+}
+
+.status-inactive::before {
+  background: #ff3366;
+}
+
+.status-warning {
+  background: rgba(255, 170, 0, 0.10);
+  border-color: rgba(255, 170, 0, 0.28);
+  color: #ffaa00;
+}
+
+.status-warning::before {
+  background: #ffaa00;
+  animation: blink 1s ease-in-out infinite;
 }
 
 .agent-empty {
   text-align: center;
-  color: #666;
-  padding: 18px;
+  color: rgba(226, 232, 240, 0.35);
+  padding: 20px;
+  font-size: 13px;
 }
 
 .agent-api-offline {
-  color: #dc3545;
-  margin: 0 0 12px 0;
-  font-weight: 700;
+  color: #ff3366;
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+@keyframes blink {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.2;
+  }
 }

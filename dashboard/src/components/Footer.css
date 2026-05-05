@@ -1,0 +1,11 @@
+/* Footer v2 */
+.footer {
+    text-align: center;
+    padding: 14px;
+    background: #0b1221;
+    border-top: 1px solid rgba(0, 212, 255, 0.08);
+    color: rgba(226, 232, 240, 0.28);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}

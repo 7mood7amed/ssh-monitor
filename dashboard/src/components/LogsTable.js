@@ -1,8 +1,3 @@
-// =========================================================
-// SSH Events table component (uses /api/ssh_events)
-// File: dashboard/src/components/LogsTable.js
-// =========================================================
-
 import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
 import "./FtpLogs.css";
@@ -16,160 +11,108 @@ function normalizeSeverity(value) {
 function inferSeverityFallback(row) {
   const outcome = (row?.outcome || "").toLowerCase();
   const eventType = (row?.event_type || "").toLowerCase();
-
   if (eventType === "login_fail" || outcome === "fail") return "HIGH";
   if (eventType === "disconnect") return "MEDIUM";
   return "LOW";
 }
 
-function SeverityBadge({ severity }) {
-  const sev = normalizeSeverity(severity);
-  const label = sev || "LOW";
-
-  const style = {
-    display: "inline-block",
-    padding: "2px 8px",
-    borderRadius: "999px",
-    fontSize: "12px",
-    fontWeight: 700,
-    letterSpacing: "0.4px",
-    textTransform: "uppercase",
-    border: "1px solid rgba(255,255,255,0.12)",
-    background:
-      label === "CRITICAL"
-        ? "rgba(239,68,68,0.25)"
-        : label === "HIGH"
-        ? "rgba(249,115,22,0.22)"
-        : label === "MEDIUM"
-        ? "rgba(234,179,8,0.20)"
-        : "rgba(34,197,94,0.18)",
-  };
-
-  return <span style={style}>{label}</span>;
+function SevBadge({ severity }) {
+  const s = normalizeSeverity(severity) || "LOW";
+  return (
+    <span className={`sev-badge ${s}`}>{s}</span>
+  );
 }
 
 const LIMIT_OPTIONS = [20, 50, 100];
 
 const LogsTable = () => {
   const [rows, setRows] = useState([]);
-
-  // Filters
   const [q, setQ] = useState("");
   const [user, setUser] = useState("");
   const [ip, setIp] = useState("");
   const [event, setEvent] = useState("All");
   const [outcome, setOutcome] = useState("All");
   const [severity, setSeverity] = useState("All");
-
-  // Pagination
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
-
-  // Expand rows
   const [expandedIds, setExpandedIds] = useState(() => new Set());
 
-  useEffect(() => {
-    setPage(1);
-  }, [q, user, ip, event, outcome, severity, pageSize]);
-
-  useEffect(() => {
-    setExpandedIds(new Set());
-  }, [page, pageSize, q, user, ip, event, outcome, severity]);
+  useEffect(() => { setPage(1); }, [q, user, ip, event, outcome, severity, pageSize]);
+  useEffect(() => { setExpandedIds(new Set()); }, [page, pageSize, q, user, ip, event, outcome, severity]);
 
   const url = useMemo(() => {
-    const params = new URLSearchParams();
-    params.set("page", String(page));
-    params.set("limit", String(pageSize));
-    if (q.trim()) params.set("q", q.trim());
-    if (user.trim()) params.set("user", user.trim());
-    if (ip.trim()) params.set("ip", ip.trim());
-    if (event !== "All") params.set("event", event);
-    if (outcome !== "All") params.set("outcome", outcome);
-    if (severity !== "All") params.set("severity", severity.toLowerCase());
-
-    return `${API_BASE_URL}/api/ssh_events?${params.toString()}`;
+    const p = new URLSearchParams();
+    p.set("page", String(page));
+    p.set("limit", String(pageSize));
+    if (q.trim()) p.set("q", q.trim());
+    if (user.trim()) p.set("user", user.trim());
+    if (ip.trim()) p.set("ip", ip.trim());
+    if (event !== "All") p.set("event", event);
+    if (outcome !== "All") p.set("outcome", outcome);
+    if (severity !== "All") p.set("severity", severity.toLowerCase());
+    return `${API_BASE_URL}/api/ssh_events?${p}`;
   }, [page, pageSize, q, user, ip, event, outcome, severity]);
 
   useEffect(() => {
-    const fetchEvents = async () => {
+    const fetch_ = async () => {
       try {
         const res = await fetch(url);
         const data = await res.json();
-
-        const incoming = Array.isArray(data.events) ? data.events : [];
-        const normalized = incoming.map((r) => {
-          const sev = normalizeSeverity(r.severity) || inferSeverityFallback(r);
-          return { ...r, severity: sev };
-        });
-
-        setRows(normalized);
+        const rows = (Array.isArray(data.events) ? data.events : []).map(r => ({
+          ...r,
+          severity: normalizeSeverity(r.severity) || inferSeverityFallback(r),
+        }));
+        setRows(rows);
         setTotal(data.total || 0);
         setTotalPages(data.totalPages || 1);
         if ((data.totalPages || 1) < page) setPage(1);
-      } catch (e) {
-        console.error("Error fetching ssh events:", e);
-      }
+      } catch (e) { console.error("SSH events fetch failed:", e); }
     };
-
-    fetchEvents();
-    const interval = setInterval(fetchEvents, 10000);
-    return () => clearInterval(interval);
+    fetch_();
+    const t = setInterval(fetch_, 10000);
+    return () => clearInterval(t);
   }, [url, page]);
 
-  const toggleExpand = (id) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const toggleExpand = id => setExpandedIds(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   const clear = () => {
-    setQ("");
-    setUser("");
-    setIp("");
-    setEvent("All");
-    setOutcome("All");
-    setSeverity("All");
-    setExpandedIds(new Set());
-    setPage(1);
+    setQ(""); setUser(""); setIp("");
+    setEvent("All"); setOutcome("All"); setSeverity("All");
+    setExpandedIds(new Set()); setPage(1);
   };
 
   return (
     <div className="content">
       <div className="card">
+        {/* Header */}
         <div className="card-header">
           <div>
             <h2 className="card-title">📜 SSH Events</h2>
-            <div className="card-subtitle">User + IP + login/logout attempts</div>
+            <div className="card-subtitle">User · IP · login/logout attempts</div>
           </div>
-
-          <div className="page-size-buttons" role="group" aria-label="Page size">
-            {LIMIT_OPTIONS.map((n) => (
-              <button
-                key={n}
-                type="button"
+          <div className="page-size-buttons">
+            {LIMIT_OPTIONS.map(n => (
+              <button key={n} type="button"
                 className={n === pageSize ? "pill pill-active" : "pill"}
-                onClick={() => {
-                  setPageSize(n);
-                  setPage(1);
-                }}
-              >
+                onClick={() => { setPageSize(n); setPage(1); }}>
                 {n}
               </button>
             ))}
           </div>
         </div>
 
+        {/* Filters */}
         <div className="filters-row">
-          <input className="input" placeholder="Search raw/user/ip..." value={q} onChange={(e) => setQ(e.target.value)} />
-          <input className="input" placeholder="Username" value={user} onChange={(e) => setUser(e.target.value)} />
-          <input className="input" placeholder="IP" value={ip} onChange={(e) => setIp(e.target.value)} />
-
-          <select className="select" value={event} onChange={(e) => setEvent(e.target.value)}>
+          <input className="input" placeholder="Search user / IP…" value={q} onChange={e => setQ(e.target.value)} />
+          <input className="input" placeholder="Username" value={user} onChange={e => setUser(e.target.value)} />
+          <input className="input" placeholder="IP address" value={ip} onChange={e => setIp(e.target.value)} />
+          <select className="select" value={event} onChange={e => setEvent(e.target.value)}>
             <option value="All">All Events</option>
             <option value="login_success">Login Success</option>
             <option value="login_fail">Login Fail</option>
@@ -177,112 +120,90 @@ const LogsTable = () => {
             <option value="session_close">Session Close</option>
             <option value="disconnect">Disconnect</option>
           </select>
-
-          <select className="select" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+          <select className="select" value={outcome} onChange={e => setOutcome(e.target.value)}>
             <option value="All">All Outcomes</option>
             <option value="success">Success</option>
             <option value="fail">Fail</option>
             <option value="info">Info</option>
           </select>
-
-          <select className="select" value={severity} onChange={(e) => setSeverity(e.target.value)}>
+          <select className="select" value={severity} onChange={e => setSeverity(e.target.value)}>
             <option value="All">All Severity</option>
             <option value="low">LOW</option>
             <option value="medium">MEDIUM</option>
             <option value="high">HIGH</option>
             <option value="critical">CRITICAL</option>
           </select>
-
-          <button className="btn btn-secondary" type="button" onClick={clear}>
-            Clear
-          </button>
+          <button className="btn" type="button" onClick={clear}>Clear</button>
         </div>
 
+        {/* Meta */}
         <div className="meta-row">
-          <div className="meta-left">
-            Showing <b>{rows.length}</b> of <b>{total}</b> results
-          </div>
-          <div className="meta-right">
-            Page <b>{page}</b> / <b>{totalPages}</b>
-          </div>
+          <span>Showing <b>{rows.length}</b> of <b>{total}</b> results</span>
+          <span>Page <b>{page}</b> / <b>{totalPages}</b></span>
         </div>
 
+        {/* Table — RAW column removed, shown only in expand */}
         <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
-                <th style={{ width: 180 }}>TIME</th>
-                <th style={{ width: 140 }}>USER</th>
-                <th style={{ width: 160 }}>IP</th>
-                <th style={{ width: 160 }}>EVENT</th>
-                <th style={{ width: 120 }}>OUTCOME</th>
-                <th style={{ width: 140 }}>METHOD</th>
-                <th style={{ width: 140 }}>SEVERITY</th>
-                <th>RAW</th>
-                <th style={{ width: 70 }} />
+                <th style={{ width: 160 }}>TIME</th>
+                <th style={{ width: 120 }}>USER</th>
+                <th style={{ width: 140 }}>IP</th>
+                <th style={{ width: 150 }}>EVENT</th>
+                <th style={{ width: 100 }}>OUTCOME</th>
+                <th style={{ width: 110 }}>METHOD</th>
+                <th style={{ width: 110 }}>SEVERITY</th>
+                <th style={{ width: 40 }} />
               </tr>
             </thead>
-
             <tbody>
               {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="empty">
-                    No SSH events match your filters.
-                  </td>
-                </tr>
+                <tr><td colSpan={8} className="empty">No SSH events match your filters.</td></tr>
               ) : (
-                rows.map((r) => {
+                rows.map(r => {
                   const expanded = expandedIds.has(r.id);
-
-                  const eventKey = String(r.event_type || "other")
-                    .toLowerCase()
-                    .trim()
-                    .replace(/\s+/g, "_");
+                  const eventKey = String(r.event_type || "other").toLowerCase().replace(/\s+/g, "_");
 
                   return (
                     <React.Fragment key={r.id}>
-                      <tr>
-                        <td className="mono" title={r.timestamp}>
-                          {r.timestamp}
+                      <tr className={
+                        r.severity === "HIGH" || r.severity === "CRITICAL" ? "row-high" : ""
+                      }>
+                        <td className="mono" style={{ fontSize: 12 }}>{r.timestamp}</td>
+                        <td style={{ fontWeight: 600 }}>{r.username || "—"}</td>
+                        <td>
+                          {r.ip ? (
+                            <span style={{
+                              fontFamily: "monospace", fontSize: 12, color: "#00d4ff",
+                              background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.18)",
+                              borderRadius: 4, padding: "1px 6px",
+                            }}>{r.ip}</span>
+                          ) : "—"}
                         </td>
-                        <td title={r.username || ""}>{r.username || ""}</td>
-                        <td className="mono" title={r.ip || ""}>
-                          {r.ip || ""}
-                        </td>
-
-                        
-                        <td title={r.event_type}>
+                        <td>
                           <span className={`badge badge-${eventKey}`}>{r.event_type}</span>
                         </td>
-
-                        <td title={r.outcome || ""}>{r.outcome || ""}</td>
-                        <td title={r.auth_method || ""}>{r.auth_method || ""}</td>
-
-                        <td title={r.severity || ""}>
-                          <SeverityBadge severity={r.severity} />
-                        </td>
-
-                        <td className="mono" title={r.message}>
-                          {r.message}
-                        </td>
-
-                        
+                        <td style={{ color: "rgba(226,232,240,0.65)", fontSize: 12 }}>{r.outcome || "—"}</td>
+                        <td style={{ color: "rgba(226,232,240,0.65)", fontSize: 12 }}>{r.auth_method || "—"}</td>
+                        <td><SevBadge severity={r.severity} /></td>
                         <td>
-                          <button className="icon-pill" type="button" onClick={() => toggleExpand(r.id)} aria-label="Toggle raw">
+                          <button className="icon-pill" type="button"
+                            onClick={() => toggleExpand(r.id)}
+                            title={expanded ? "Hide raw" : "Show raw log"}>
                             {expanded ? "▲" : "▼"}
                           </button>
                         </td>
                       </tr>
 
+                      {/* Expand: show raw message */}
                       {expanded && (
                         <tr>
-                          <td colSpan={9}>
-                            <div style={{ padding: "12px 2px" }}>
-                              <div style={{ color: "rgba(226,232,240,0.75)", fontSize: 12, marginBottom: 6 }}>
-                                Full Raw Line
-                              </div>
-                              <pre className="raw-pre">{r.message}</pre>
+                          <td colSpan={8} style={{ padding: "0 12px 12px" }}>
+                            <div style={{ fontSize: 11, color: "rgba(0,212,255,0.60)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>
+                              Raw Log Line
                             </div>
+                            <pre className="raw-pre">{r.message}</pre>
                           </td>
                         </tr>
                       )}
@@ -294,18 +215,11 @@ const LogsTable = () => {
           </table>
         </div>
 
+        {/* Pager */}
         <div className="pager">
-          <button className="btn btn-secondary" onClick={() => setPage((p) => Math.max(p - 1, 1))} disabled={page === 1}>
-            Prev
-          </button>
-
-          <button
-            className="btn btn-secondary"
-            onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
-            disabled={page === totalPages || totalPages === 0}
-          >
-            Next
-          </button>
+          <button className="btn" onClick={() => setPage(p => Math.max(p - 1, 1))} disabled={page === 1}>← Prev</button>
+          <span style={{ fontSize: 12, color: "rgba(226,232,240,0.45)" }}>{page} / {totalPages}</span>
+          <button className="btn" onClick={() => setPage(p => Math.min(p + 1, totalPages))} disabled={page >= totalPages}>Next →</button>
         </div>
       </div>
     </div>

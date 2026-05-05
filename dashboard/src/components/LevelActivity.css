@@ -1,76 +1,96 @@
-
+/* ── LevelActivity v2 ── */
 .la-card {
-  background: #0f172a;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 14px;
-  padding: 18px 18px 14px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
-  margin: 18px auto;
-  width: 90%;
-  max-width: 1100px;
+  background: #0b1221;
+  border: 1px solid rgba(0, 212, 255, 0.10);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin: 0 0 18px;
+  width: 100%;
 }
 
 .la-title {
+  font-size: 11px;
   font-weight: 700;
-  font-size: 18px;
-  margin-bottom: 12px;
-  color: #e2e8f0;
+  color: rgba(0, 212, 255, 0.75);
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  margin-bottom: 16px;
 }
 
 .la-row {
-  display: flex;
-  gap: 26px;
-  align-items: center;
-  justify-content: flex-start;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 600px) {
+  .la-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .la-item {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  min-width: 130px;
+  gap: 10px;
 }
 
 .la-label {
-  font-size: 14px;
-  color: rgba(226, 232, 240, 0.85);
+  font-size: 12px;
   font-weight: 600;
+  color: rgba(226, 232, 240, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
 }
 
 .la-ring {
-  width: 88px;
-  height: 88px;
-  border-radius: 999px;
-
-  /* Grey base ring (dark-friendly) */
-  background: conic-gradient(var(--accent) var(--deg), rgba(148, 163, 184, 0.22) 0);
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent) var(--deg), rgba(255, 255, 255, 0.04) 0);
   display: grid;
   place-items: center;
 }
 
 .la-center {
-  width: 70px;
-  height: 70px;
-  border-radius: 999px;
-
-  
-  background: rgba(2, 6, 23, 0.55);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  display: grid;
-  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #0b1221;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
 }
 
-.la-value {
-  font-weight: 800;
-  font-size: 15px;
-  color: rgba(226, 232, 240, 0.9);
+.la-count {
+  font-weight: 700;
+  font-size: 18px;
+  color: #e2e8f0;
+  font-family: ui-monospace, Consolas, monospace;
+  line-height: 1;
 }
 
-/* Severity colors */
+.la-pct {
+  font-size: 10px;
+  color: rgba(226, 232, 240, 0.40);
+}
 
-.la-critical { --accent: #ef4444; } /* RED */
-.la-high     { --accent: #f97316; } /* ORANGE */
-.la-medium   { --accent: #facc15; } /* YELLOW */
-.la-low      { --accent: #22c55e; } /* GREEN */
+.la-critical {
+  --accent: #ff3366;
+}
+
+.la-high {
+  --accent: #ffaa00;
+}
+
+.la-medium {
+  --accent: #f59e0b;
+}
+
+.la-low {
+  --accent: #00ff88;
+}

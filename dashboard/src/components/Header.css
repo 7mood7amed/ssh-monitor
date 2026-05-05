@@ -1,41 +1,94 @@
+/* ── Header v2 ── */
+.header {
+  background: #050c1a;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.14);
+  padding: 12px 0 0;
+  position: relative;
+}
+
+.header::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, #00d4ff 25%, #a855f7 75%, transparent 100%);
+}
+
 .header-inner {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   align-items: center;
+  gap: 8px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+.header-title {
+  text-align: center;
+}
+
+.header-title h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #e2e8f0;
+  letter-spacing: 0.01em;
 }
 
 .header-title p {
-  margin: 6px 0 0 0;
+  margin: 3px 0 0;
+  font-size: 11px;
+  color: rgba(0, 212, 255, 0.70);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .header-updated {
-  margin-top: 8px;
-  font-size: 14px;
-  opacity: 0.9;
+  margin-top: 2px !important;
+  font-size: 11px !important;
+  color: rgba(226, 232, 240, 0.38) !important;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace !important;
+  letter-spacing: 0.04em;
 }
 
+/* ── Nav ── */
 .top-nav {
   display: flex;
-  gap: 10px;
+  gap: 1px;
   flex-wrap: wrap;
   justify-content: center;
+  padding: 6px 0 0;
 }
 
 .nav-link {
   display: inline-block;
-  padding: 8px 12px;
-  border-radius: 8px;
+  padding: 7px 15px;
+  border-radius: 8px 8px 0 0;
   text-decoration: none;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.48);
+  font-size: 13px;
   font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  border: 1px solid transparent;
+  border-bottom: none;
+  position: relative;
+  bottom: -1px;
 }
 
 .nav-link:hover {
-  background: rgba(255, 255, 255, 0.18);
+  color: #00d4ff;
+  background: rgba(0, 212, 255, 0.06);
+  border-color: rgba(0, 212, 255, 0.14);
 }
 
 .nav-link.active {
-  background: rgba(255, 255, 255, 0.28);
+  color: #00d4ff;
+  background: #050c1a;
+  border-color: rgba(0, 212, 255, 0.22);
+  text-shadow: 0 0 10px rgba(0, 212, 255, 0.45);
 }

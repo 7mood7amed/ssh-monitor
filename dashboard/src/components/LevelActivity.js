@@ -1,4 +1,3 @@
-// LevelActivity.js
 import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
 import "./LevelActivity.css";
@@ -11,22 +10,19 @@ function clamp01(x) {
 
 function Ring({ label, value, total, accentClass }) {
   const pct = total > 0 ? clamp01(value / total) : 0;
-
-  // Conic ring fill using CSS var (--deg) in degrees
   const deg = Math.round(pct * 360);
+  const pctDisplay = total > 0 ? Math.round(pct * 100) : 0;
 
   return (
     <div className="la-item">
       <div
         className={`la-ring ${accentClass}`}
         style={{ "--deg": `${deg}deg` }}
-        aria-label={`${label} ${value} of ${total}`}
-        title={`${label}: ${value}/${total}`}
+        title={`${label}: ${value} events (${pctDisplay}%)`}
       >
         <div className="la-center">
-          <div className="la-value">
-            {value}/{total}
-          </div>
+          <div className="la-count">{value}</div>
+          <div className="la-pct">{pctDisplay}%</div>
         </div>
       </div>
       <div className="la-label">{label}</div>
@@ -35,13 +31,7 @@ function Ring({ label, value, total, accentClass }) {
 }
 
 export default function LevelActivity({ refreshTrigger }) {
-  const [data, setData] = useState({
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    total: 0,
-  });
+  const [data, setData] = useState({ critical: 0, high: 0, medium: 0, low: 0, total: 0 });
 
   const url = useMemo(() => `${API_BASE_URL}/api/severity_summary?hours=24`, []);
 
@@ -54,43 +44,35 @@ export default function LevelActivity({ refreshTrigger }) {
         const json = await res.json();
         if (!alive) return;
 
-        // API shape is:
-        // { counts: { critical, high, medium, low }, total, window }
         const counts = json?.counts ?? {};
-
         const critical = Number(counts.critical ?? 0);
         const high = Number(counts.high ?? 0);
         const medium = Number(counts.medium ?? 0);
         const low = Number(counts.low ?? 0);
-
-        // Prefer json.total, but fall back to computed total if missing/bad
-        const computedTotal = critical + high + medium + low;
-        const total =
-          Number.isFinite(Number(json?.total)) && Number(json?.total) >= 0
-            ? Number(json.total)
-            : computedTotal;
+        const computed = critical + high + medium + low;
+        const total = Number.isFinite(Number(json?.total)) ? Number(json.total) : computed;
 
         setData({ critical, high, medium, low, total });
       } catch (e) {
-        // keep old values if request fails
         console.error("severity_summary fetch failed:", e);
       }
     };
 
     fetchSummary();
-    const t = setInterval(fetchSummary, 10000); // refresh every 10s
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
+    const t = setInterval(fetchSummary, 15000);
+    return () => { alive = false; clearInterval(t); };
   }, [url, refreshTrigger]);
 
   const { critical, high, medium, low, total } = data;
 
   return (
     <section className="la-card">
-      <div className="la-title">Level Activity</div>
-
+      <div className="la-title">
+        Severity Activity — Last 24h &nbsp;
+        <span style={{ color: "rgba(226,232,240,0.45)", fontWeight: 400, fontSize: 11 }}>
+          {total} total events
+        </span>
+      </div>
       <div className="la-row">
         <Ring label="Critical" value={critical} total={total} accentClass="la-critical" />
         <Ring label="High" value={high} total={total} accentClass="la-high" />
