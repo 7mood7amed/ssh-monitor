@@ -81,7 +81,7 @@ const WebTraffic = () => {
       } catch (e) { console.error("Web logs fetch failed:", e); }
     };
     fetch_();
-    const t = setInterval(fetch_, 10000);
+    const t = setInterval(fetch_, 5000);
     return () => clearInterval(t);
   }, [url]);
 

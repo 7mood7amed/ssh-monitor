@@ -75,7 +75,12 @@ export default function FtpLogs({ refreshTrigger }) {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchLogs(); }, [refreshTrigger]);
+  useEffect(() => {
+    fetchLogs();
+    const id = setInterval(fetchLogs, 5000);
+    return () => clearInterval(id);
+  }, [refreshTrigger]);
+
   useEffect(() => { setPage(1); }, [q, username, ip, action, severity, limit]);
 
   const filtered = useMemo(() => {

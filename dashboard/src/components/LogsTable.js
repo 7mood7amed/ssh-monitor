@@ -70,8 +70,9 @@ const LogsTable = () => {
         if ((data.totalPages || 1) < page) setPage(1);
       } catch (e) { console.error("SSH events fetch failed:", e); }
     };
+    
     fetch_();
-    const t = setInterval(fetch_, 10000);
+    const t = setInterval(fetch_, 5000);
     return () => clearInterval(t);
   }, [url, page]);
 

@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # =========================================
 # File: ssh-monitor/api_server.py
@@ -21,6 +20,9 @@ from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 import csv
 import io
+import json
+import urllib.request
+import urllib.error
 from functools import lru_cache
 
 # -----------------------------
@@ -1944,6 +1946,78 @@ def ai_top_correlations():
             "multi_source_ips": result["correlations"].get("multi_source_ips", []),
             "correlated_ips": result["correlations"].get("correlated_ips", []),
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq AI proxy — calls Groq cloud API (free, no disk space, fast)
+# Model: llama3-8b-8192 (Llama 3 8B hosted by Groq)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODEL   = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+
+
+@app.route("/api/ai/claude", methods=["POST"])
+def claude_proxy():
+    """
+    Proxies an AI analysis call to Groq cloud API.
+    Expects JSON body: { "system": "...", "user": "..." }
+    Returns:  { "text": "...", "model": "..." }
+    """
+    if not GROQ_API_KEY:
+        return jsonify({
+            "error": "GROQ_API_KEY is not set. Run: export GROQ_API_KEY=gsk_..."
+        }), 503
+
+    try:
+        body          = request.get_json(force=True) or {}
+        system_prompt = body.get("system", "")
+        user_message  = body.get("user", "")
+
+        if not user_message:
+            return jsonify({"error": "Missing 'user' field in request body"}), 400
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_message})
+
+        payload = json.dumps({
+            "model":       GROQ_MODEL,
+            "messages":    messages,
+            "max_tokens":  500,
+            "temperature": 0.3,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type":  "application/json",
+                "User-Agent":    "RavenSOC/1.0 (Security Monitoring System)",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_body = json.loads(resp.read().decode("utf-8"))
+
+        text = resp_body["choices"][0]["message"]["content"].strip()
+
+        return jsonify({
+            "text":  text,
+            "model": GROQ_MODEL,
+        })
+
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        return jsonify({"error": f"Groq API error {e.code}: {err_body}"}), 502
+    except urllib.error.URLError as e:
+        return jsonify({"error": f"Cannot reach Groq API: {e.reason}"}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

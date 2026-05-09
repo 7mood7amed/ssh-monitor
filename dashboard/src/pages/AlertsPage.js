@@ -271,7 +271,12 @@ export default function AlertsPage({ refreshTrigger }) {
     setTotal(data.total || 0);
   }, [page, priority, status, q, includeInternal]);
 
-  useEffect(() => { fetchAlerts().catch(console.error); }, [fetchAlerts, refreshTrigger]);
+  useEffect(() => {
+    fetchAlerts().catch(console.error);
+    const id = setInterval(() => fetchAlerts().catch(console.error), 5000);
+    return () => clearInterval(id);
+  }, [fetchAlerts, refreshTrigger]);
+  
   useEffect(() => { setPage(1); }, [priority, status, q, includeInternal]);
 
   const handleAction = async (alertId, newStatus) => {

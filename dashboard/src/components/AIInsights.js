@@ -466,6 +466,9 @@ export default function AIInsights({ refreshTrigger }) {
   const [windowHours, setWindowHours] = useState("1");
   const [selectedEntity, setSelectedEntity] = useState(null);
   const selectedEntityRef = useRef(null);
+  const [claudeSummary, setClaudeSummary] = useState(null);
+  const [claudeLoading, setClaudeLoading] = useState(false);
+  const [claudeError, setClaudeError] = useState(null);
 
   useEffect(() => {
     selectedEntityRef.current = selectedEntity;
@@ -481,10 +484,88 @@ export default function AIInsights({ refreshTrigger }) {
     [windowHours]
   );
 
+  // ── Call Llama 3.2 via Ollama proxy ────────────────────────────────────────
+  const callClaude = useCallback(async (analyzeJson, corrJson) => {
+    setClaudeLoading(true);
+    setClaudeError(null);
+
+    try {
+      const totals = analyzeJson?.report_data?.totals || {};
+      const risk = analyzeJson?.risk || {};
+      const alerts = (analyzeJson?.report_data?.recent_alerts || []).slice(0, 8).map(
+        a => `${(a.priority || "?").toUpperCase()} — ${a.title || "?"} (source: ${a.source || "?"}, ip: ${a.ip_address || "?"})`
+      );
+      const stages = (analyzeJson?.report_data?.attack_stages?.stages || []).map(s => s.stage);
+      const topIps = (analyzeJson?.correlations?.correlated_ips || [])
+        .filter(c => c.ip_scope === "external" || (c.activity_score || 0) > 10)
+        .slice(0, 5)
+        .map(c => ({
+          ip: c.ip, scope: c.ip_scope,
+          ssh_fail: c.ssh_failures || 0,
+          ftp_fail: c.ftp_failures || 0,
+          web_hits: c.web_hits || 0,
+          alerts: c.alert_count || 0,
+          sources: c.sources || [],
+          patterns: c.probable_patterns || [],
+        }));
+
+      const evidence = {
+        risk_score: risk.score ?? 0,
+        risk_level: (risk.level || "unknown").toUpperCase(),
+        risk_reasons: risk.reasons || [],
+        totals,
+        recent_alerts: alerts,
+        attack_stages: stages,
+        top_correlated_ips: topIps,
+        multi_source_ip_count: (analyzeJson?.correlations?.multi_source_ips || []).length,
+      };
+
+      const systemPrompt =
+        "You are a cybersecurity analyst assistant embedded in Raven, a multi-protocol security monitoring system running Llama 3.1 via Groq. " +
+        "You receive structured security evidence collected from SSH logs, FTP logs, Apache web logs, " +
+        "Nmap port scans, and TShark packet captures. " +
+        "Write a concise professional security analysis narrative strictly based on the provided data. " +
+        "Rules: Never invent IPs, usernames, counts, or events not in the data. " +
+        "Distinguish internal/trusted hosts from external/suspicious sources. " +
+        "Identify the most significant threats first. " +
+        "Call out multi-source correlation when one IP appears across multiple services. " +
+        "End with 1-2 concrete analyst recommendations. " +
+        "Keep response under 220 words. Write in flowing prose, not bullet points.";
+
+      const response = await fetch(`${API_BASE_URL}/api/ai/claude`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: systemPrompt,
+          user:
+            "Here is the current security evidence from Raven:\n\n" +
+            JSON.stringify(evidence, null, 2) +
+            "\n\nWrite a professional security analysis narrative based on this data.",
+          max_tokens: 500,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `Server error ${response.status}`);
+      }
+
+      const text = (data.text || "").trim();
+      setClaudeSummary(text || "Groq returned an empty response.");
+    } catch (err) {
+      console.error("Llama 3.2 call failed:", err);
+      setClaudeError(err.message || "Groq AI call failed.");
+    } finally {
+      setClaudeLoading(false);
+    }
+  }, []);
+
   const runAnalysis = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
+      setClaudeSummary(null);
 
       const [analyzeRes, corrRes] = await Promise.all([
         fetch(analyzeUrl),
@@ -509,23 +590,23 @@ export default function AIInsights({ refreshTrigger }) {
       setLastRun(new Date().toLocaleTimeString());
 
       const currentEntity = selectedEntityRef.current;
-
       if (currentEntity?.ip) {
         const refreshedMatch = safeArray(corrJson?.correlated_ips).find(
           (item) => getItemIp(item) === getItemIp(currentEntity)
         );
-
-        if (refreshedMatch) {
-          setSelectedEntity(refreshedMatch);
-        }
+        if (refreshedMatch) setSelectedEntity(refreshedMatch);
       }
+
+      // Call Llama 3.2 with the structured data
+      await callClaude(analyzeJson, corrJson);
+
     } catch (err) {
       console.error("AI insights fetch failed:", err);
       setError(err.message || "Failed to load AI insights.");
     } finally {
       setLoading(false);
     }
-  }, [analyzeUrl, correlationsUrl]);
+  }, [analyzeUrl, correlationsUrl, callClaude]);
 
   useEffect(() => {
     let alive = true;
@@ -568,6 +649,7 @@ export default function AIInsights({ refreshTrigger }) {
   ];
 
   const summaryText = getSummaryText(analyzeData);
+  // AI state is managed via claudeSummary / claudeLoading / claudeError
   const topActivity = getTopActivity(analyzeData);
   const topExternal = getTopExternal(analyzeData);
   const topInternal = getTopInternal(analyzeData);
@@ -606,11 +688,49 @@ export default function AIInsights({ refreshTrigger }) {
                 color: error ? "rgba(239,68,68,0.9)" : "rgba(226,232,240,0.75)",
               }}
             >
-              {loading ? "AI: LOADING" : error ? "AI: ERROR" : "AI: OK"}
+              {loading ? "AI: LOADING..." : error ? "AI: ERROR" : claudeSummary ? "AI: OK" : claudeLoading ? "AI: THINKING..." : "AI: OK (fallback)"}
             </span>
 
+            {/* Llama 3.2 AI badge */}
+            {!loading && claudeSummary && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "3px 10px", borderRadius: 999,
+                background: "rgba(168,85,247,0.15)",
+                border: "1px solid rgba(168,85,247,0.45)",
+                color: "#c084fc", fontSize: 11, fontWeight: 700,
+                letterSpacing: "0.04em",
+              }}>
+                ✦ Powered by Llama 3.1 (Groq)
+              </span>
+            )}
+
+            {!loading && !claudeSummary && claudeError && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "3px 10px", borderRadius: 999,
+                background: "rgba(255,170,0,0.12)",
+                border: "1px solid rgba(255,170,0,0.35)",
+                color: "#ffaa00", fontSize: 11, fontWeight: 700,
+              }}>
+                ⚠ AI unavailable — rule-based fallback
+              </span>
+            )}
+
+            {!loading && !claudeSummary && !claudeError && !claudeLoading && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "3px 10px", borderRadius: 999,
+                background: "rgba(148,163,184,0.1)",
+                border: "1px solid rgba(148,163,184,0.25)",
+                color: "rgba(148,163,184,0.8)", fontSize: 11, fontWeight: 700,
+              }}>
+                Rule-based analysis
+              </span>
+            )}
+
             {lastRun && (
-              <span style={{ fontSize: 12, color: "rgba(226,232,240,0.65)" }}>
+              <span style={{ fontSize: 12, color: "rgba(226,232,240,0.55)" }}>
                 Last run: {lastRun}
               </span>
             )}
@@ -644,10 +764,11 @@ export default function AIInsights({ refreshTrigger }) {
         <div className="ai-summary-card" style={{ marginBottom: 14 }}>
           <div className="ai-summary-title">What the AI Score Is Based On</div>
           <div className="ai-summary-text">
-            The AI score is a rule-based investigation score calculated from recent security evidence.
-            It increases when the selected time window contains high-priority alerts, repeated SSH or FTP
-            login failures, suspicious web activity, sensitive open ports, and IP addresses appearing across
-            multiple monitored sources. Higher scores mean the activity should be reviewed with higher priority.
+            The risk score (0–100) is calculated from structured database evidence: critical and high-priority
+            alerts, repeated SSH or FTP login failures, suspicious web activity, sensitive open ports, and
+            IP addresses appearing across multiple monitored sources. When Groq AI is enabled, the narrative
+            analysis below the score is generated by Llama 3.1 using this same structured evidence — not invented data.
+            Higher scores mean the activity should be reviewed with higher priority.
           </div>
         </div>
 
@@ -849,9 +970,80 @@ export default function AIInsights({ refreshTrigger }) {
 
 
 
-        <div className="ai-summary-card">
-          <div className="ai-summary-title">AI Summary</div>
-          <div className="ai-summary-text">{loading ? "Loading AI summary..." : summaryText}</div>
+        <div className="ai-summary-card" style={{
+          border: claudeSummary
+            ? "1px solid rgba(168,85,247,0.40)"
+            : claudeError
+              ? "1px solid rgba(255,170,0,0.30)"
+              : "1px solid rgba(0,212,255,0.15)",
+          background: claudeSummary
+            ? "rgba(168,85,247,0.07)"
+            : "rgba(0,212,255,0.04)",
+        }}>
+          {/* Header row */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div className="ai-summary-title" style={{ margin: 0 }}>
+              {claudeSummary ? "Llama 3.1 Analysis" : claudeLoading ? "Llama 3.1 is analysing..." : "AI Summary"}
+            </div>
+            {claudeSummary && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 11, fontWeight: 700, letterSpacing: "0.04em",
+                color: "#c084fc",
+                background: "rgba(168,85,247,0.14)",
+                border: "1px solid rgba(168,85,247,0.38)",
+                padding: "3px 10px", borderRadius: 999,
+              }}>
+                ✦ Powered by Llama 3.1 (Groq)
+              </span>
+            )}
+            {claudeLoading && !claudeSummary && (
+              <span style={{
+                fontSize: 11, fontWeight: 700, color: "#c084fc",
+                background: "rgba(168,85,247,0.10)",
+                border: "1px solid rgba(168,85,247,0.28)",
+                padding: "3px 10px", borderRadius: 999,
+                animation: "blink 1.4s ease-in-out infinite",
+              }}>
+                ✦ Llama 3.1 is thinking...
+              </span>
+            )}
+            {!claudeSummary && !claudeLoading && (
+              <span style={{
+                fontSize: 11, fontWeight: 700,
+                color: "rgba(148,163,184,0.65)",
+                background: "rgba(148,163,184,0.08)",
+                border: "1px solid rgba(148,163,184,0.20)",
+                padding: "3px 10px", borderRadius: 999,
+              }}>
+                Rule-based fallback
+              </span>
+            )}
+          </div>
+
+          {/* Llama 3.2 error notice */}
+          {claudeError && (
+            <div style={{
+              fontSize: 12, color: "#ffaa00", marginBottom: 10,
+              padding: "6px 10px", borderRadius: 6,
+              background: "rgba(255,170,0,0.08)",
+              border: "1px solid rgba(255,170,0,0.25)",
+            }}>
+              ⚠ Groq AI unavailable: {claudeError} — showing rule-based summary below.
+            </div>
+          )}
+
+          {/* Summary text */}
+          <div className="ai-summary-text" style={{
+            lineHeight: 1.7,
+            color: claudeSummary ? "rgba(226,232,240,0.92)" : "rgba(226,232,240,0.75)",
+          }}>
+            {loading
+              ? "Loading security data..."
+              : claudeLoading && !claudeSummary
+                ? "Analysing security events with Llama 3.1 via Groq..."
+                : claudeSummary || summaryText}
+          </div>
         </div>
 
         <div className="ai-reasoning-card">
