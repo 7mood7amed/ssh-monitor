@@ -297,6 +297,14 @@ function buildReasoningPoints(data, correlationData) {
     points.push(`${totals.nmap_findings} Nmap finding(s) were included in the analysis evidence.`);
   }
 
+  if ((totals?.fim_critical_changes ?? 0) > 0) {
+    points.push(
+      `Risk driver: critical system file modified (${totals.fim_critical_changes} change(s) to passwd/shadow/sudoers) — possible privilege escalation or persistence.`
+    );
+  } else if ((totals?.fim_changes ?? 0) > 0) {
+    points.push(`${totals.fim_changes} file integrity change(s) were observed on watched files.`);
+  }
+
   if (topExternal?.ip) {
     points.push(`The strongest external suspicious source currently maps to ${topExternal.ip}.`);
   }
@@ -348,6 +356,7 @@ function getCampaignAssessment(data, correlationData) {
   const alerts = data?.report_data?.totals?.alerts || 0;
   const sshFailures = data?.report_data?.totals?.ssh_failures || 0;
   const ftpFailures = data?.report_data?.totals?.ftp_failures || 0;
+  const fimCritical = data?.report_data?.totals?.fim_critical_changes || 0;
 
   const multiSourceCount = safeArray(
     correlationData?.multi_source_ips ||
@@ -355,12 +364,13 @@ function getCampaignAssessment(data, correlationData) {
     data?.report_data?.multi_source_ips
   ).length;
 
-  if (alerts >= 8 || sshFailures >= 25 || ftpFailures >= 25) {
+  if (alerts >= 8 || sshFailures >= 25 || ftpFailures >= 25 || fimCritical >= 1) {
     return {
       severity: "critical",
-      title: "Coordinated Attack Activity",
-      summary:
-        "Multiple high-volume indicators suggest an active attack campaign requiring immediate review.",
+      title: fimCritical >= 1 ? "Critical System File Tampering" : "Coordinated Attack Activity",
+      summary: fimCritical >= 1
+        ? "A critical system file (passwd/shadow/sudoers) was modified — possible privilege escalation or persistence requiring immediate review."
+        : "Multiple high-volume indicators suggest an active attack campaign requiring immediate review.",
     };
   }
 
@@ -509,6 +519,10 @@ export default function AIInsights({ refreshTrigger }) {
           patterns: c.probable_patterns || [],
         }));
 
+      const fimSummary = (analyzeJson?.report_data?.top_fim_changes || []).map(f => ({
+        file_path: f.file_path, event_type: f.event_type, severity: f.severity, count: f.count,
+      }));
+
       const evidence = {
         risk_score: risk.score ?? 0,
         risk_level: (risk.level || "unknown").toUpperCase(),
@@ -517,18 +531,21 @@ export default function AIInsights({ refreshTrigger }) {
         recent_alerts: alerts,
         attack_stages: stages,
         top_correlated_ips: topIps,
+        fim_summary: fimSummary,
         multi_source_ip_count: (analyzeJson?.correlations?.multi_source_ips || []).length,
       };
 
       const systemPrompt =
         "You are a cybersecurity analyst assistant embedded in Raven, a multi-protocol security monitoring system running Llama 3.1 via Groq. " +
         "You receive structured security evidence collected from SSH logs, FTP logs, Apache web logs, " +
-        "Nmap port scans, and TShark packet captures. " +
+        "Nmap port scans, TShark packet captures, and file integrity monitoring (FIM) of critical system files and the web root. " +
         "Write a concise professional security analysis narrative strictly based on the provided data. " +
-        "Rules: Never invent IPs, usernames, counts, or events not in the data. " +
+        "Rules: Never invent IPs, usernames, counts, file paths, event types, or events not in the data. " +
         "Distinguish internal/trusted hosts from external/suspicious sources. " +
         "Identify the most significant threats first. " +
         "Call out multi-source correlation when one IP appears across multiple services. " +
+        "If a file integrity change occurs shortly after a CRITICAL alert from another source, call out that " +
+        "sequence explicitly as a possible post-compromise indicator rather than listing it in isolation. " +
         "End with 1-2 concrete analyst recommendations. " +
         "Keep response under 220 words. Write in flowing prose, not bullet points.";
 
@@ -871,6 +888,11 @@ export default function AIInsights({ refreshTrigger }) {
           <SectionChip label="FTP Failures" value={analyzeData?.report_data?.totals?.ftp_failures ?? 0} />
           <SectionChip label="Alerts" value={analyzeData?.report_data?.totals?.alerts ?? 0} />
           <SectionChip label="Nmap Findings" value={analyzeData?.report_data?.totals?.nmap_findings ?? 0} />
+          <SectionChip
+            label="FIM Changes"
+            value={analyzeData?.report_data?.totals?.fim_changes ?? 0}
+            tone={(analyzeData?.report_data?.totals?.fim_critical_changes ?? 0) > 0 ? "danger" : undefined}
+          />
         </div>
 
         <div className="ai-chart-card">

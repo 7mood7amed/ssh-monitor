@@ -159,15 +159,18 @@ class RavenAIEngine:
             "You are a cybersecurity analyst assistant embedded in Raven, "
             "a multi-protocol security monitoring system. "
             "You receive structured security data collected from SSH logs, FTP logs, "
-            "Apache web logs, Nmap port scans, and TShark packet captures. "
+            "Apache web logs, Nmap port scans, TShark packet captures, and file integrity "
+            "monitoring (FIM) of critical system files and the web root. "
             "Your job is to write a concise, professional security analysis narrative "
             "based strictly on the provided data. "
             "\n\nRules:"
-            "\n- Never invent IPs, usernames, counts, or events not present in the data."
+            "\n- Never invent IPs, usernames, counts, file paths, event types, or events not present in the data."
             "\n- Clearly distinguish internal/trusted hosts from external/suspicious sources."
             "\n- Use professional SOC analyst language."
             "\n- Identify the most significant threats first."
             "\n- Call out multi-source correlation when the same IP appears across multiple services."
+            "\n- If a file integrity change occurs shortly after a CRITICAL alert from another source, call out "
+            "that sequence explicitly as a possible post-compromise indicator rather than listing it in isolation."
             "\n- End with 1-2 concrete analyst recommendations."
             "\n- Keep the response under 250 words."
             "\n- Write in flowing prose, not bullet points."
@@ -217,6 +220,7 @@ class RavenAIEngine:
             "recent_alerts": recent_alerts,
             "attack_stages": stages,
             "top_ips":       top_ips,
+            "fim_summary":   report_data.get("top_fim_changes", []),
             "multi_source_ips_count": len(multi),
         }
 
@@ -308,6 +312,16 @@ class RavenAIEngine:
                     ORDER BY last_seen DESC LIMIT 100;
                 """, (hours,))
                 facts["nmap_findings"] = [dict(r) for r in cur.fetchall()]
+
+                cur.execute("""
+                    SELECT file_path, event_type, severity,
+                           COUNT(*) AS count, MAX(detected_at) AS last_seen
+                    FROM public.fim_events
+                    WHERE detected_at >= NOW() - (%s || ' hours')::interval
+                    GROUP BY file_path, event_type, severity
+                    ORDER BY last_seen DESC LIMIT 50;
+                """, (hours,))
+                facts["fim_changes"] = [dict(r) for r in cur.fetchall()]
 
                 cur.execute("""
                     SELECT id, created_at, source, priority, title,
@@ -497,6 +511,18 @@ class RavenAIEngine:
             score += sensitive_ports * 6
             reasons.append(f"{sensitive_ports} sensitive open port finding(s)")
 
+        fim_critical_total = sum(
+            _safe_int(x.get("count")) for x in facts.get("fim_changes", [])
+            if str(x.get("severity") or "").upper() == "CRITICAL"
+        )
+        fim_total = sum(_safe_int(x.get("count")) for x in facts.get("fim_changes", []))
+
+        if fim_critical_total > 0:
+            score += fim_critical_total * 15
+            reasons.append(f"{fim_critical_total} critical file integrity change(s) (passwd/shadow/sudoers)")
+        if fim_total >= 3:
+            score += 8; reasons.append(f"{fim_total} file integrity change(s) observed")
+
         multi_source_count = len(correlations.get("multi_source_ips", []))
         if multi_source_count > 0:
             score += multi_source_count * 7
@@ -512,6 +538,8 @@ class RavenAIEngine:
             score += 20; reasons.append("DNS beaconing-style activity observed")
         if any("TShark: Suspicious HTTP Path Probing" in t for t in alert_titles):
             score += 20; reasons.append("HTTP path probing detected")
+        if any("FIM: Critical System File" in t for t in alert_titles):
+            score += 20; reasons.append("critical system file (passwd/shadow/sudoers) modified")
 
         score = min(score, 100)
         level = "low"
@@ -547,6 +575,11 @@ class RavenAIEngine:
                 "web_suspicious_hits":   sum(_safe_int(x.get("count")) for x in facts.get("web_suspicious_ips", [])),
                 "alerts":                len(facts.get("alerts", [])),
                 "nmap_findings":         len(facts.get("nmap_findings", [])),
+                "fim_changes":           sum(_safe_int(x.get("count")) for x in facts.get("fim_changes", [])),
+                "fim_critical_changes":  sum(
+                    _safe_int(x.get("count")) for x in facts.get("fim_changes", [])
+                    if str(x.get("severity") or "").upper() == "CRITICAL"
+                ),
             },
             "top_ssh_failure_ips": [
                 {"ip": x.get("ip"), "username": x.get("username"), "count": x.get("count")}
@@ -559,6 +592,13 @@ class RavenAIEngine:
             "top_web_ips": [
                 {"ip": x.get("ip"), "count": x.get("count")}
                 for x in facts.get("web_suspicious_ips", [])[:5]
+            ],
+            "top_fim_changes": [
+                {
+                    "file_path": x.get("file_path"), "event_type": x.get("event_type"),
+                    "severity": x.get("severity"), "count": x.get("count"),
+                }
+                for x in facts.get("fim_changes", [])[:5]
             ],
             "multi_source_ips": correlations.get("multi_source_ips", [])[:5],
             "recent_alerts": [
@@ -589,6 +629,11 @@ class RavenAIEngine:
             stages.append({"stage": "Initial Access Attempt", "evidence": "Repeated authentication failures."})
         if any("Reconnaissance Campaign Detected" in t for t in titles):
             stages.append({"stage": "Campaign Correlation", "evidence": "Multiple detections grouped into campaign."})
+        if any("FIM:" in t for t in titles):
+            stages.append({
+                "stage": "File Integrity Violation",
+                "evidence": "Unauthorized change detected on a watched file (possible tampering or persistence).",
+            })
 
         confidence = "low"
         if len(stages) >= 4:   confidence = "high"
@@ -632,6 +677,17 @@ class RavenAIEngine:
             lines.append(
                 f"Cross-source correlation detected for {len(multi)} IP(s) "
                 f"across SSH, FTP, web, or Nmap sources."
+            )
+
+        if totals.get("fim_critical_changes"):
+            lines.append(
+                f"File integrity monitoring detected {totals['fim_critical_changes']} critical change(s) "
+                f"to sensitive system files (passwd/shadow/sudoers), a possible indicator of privilege "
+                f"escalation or persistence."
+            )
+        elif totals.get("fim_changes"):
+            lines.append(
+                f"File integrity monitoring logged {totals['fim_changes']} change(s) to watched files."
             )
 
         attack_stages = report_data.get("attack_stages", {})

@@ -437,7 +437,7 @@ def get_agents():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        allowed_agents = ["SSH", "FTP", "APACHE", "NMAP", "TSHARK"]
+        allowed_agents = ["SSH", "FTP", "APACHE", "NMAP", "TSHARK", "FIM"]
 
         cur.execute(
             """
@@ -546,7 +546,7 @@ def get_metrics():
                 END
             )
             FROM public.agent_status
-            WHERE agent_name IN ('SSH', 'FTP', 'APACHE', 'NMAP', 'TSHARK');
+            WHERE agent_name IN ('SSH', 'FTP', 'APACHE', 'NMAP', 'TSHARK', 'FIM');
             """
         )
         active_agents = cur.fetchone()[0] or 0
@@ -600,6 +600,28 @@ def get_metrics():
 
         anomalies = int(ssh_anom) + int(web_anom) + int(passive_scans)
 
+        cur.execute("SELECT COUNT(*) FROM public.fim_baseline;")
+        files_monitored = cur.fetchone()[0] or 0
+
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM public.fim_events
+            WHERE detected_at >= NOW() - INTERVAL '24 hours';
+            """
+        )
+        fim_changes_24h = cur.fetchone()[0] or 0
+
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM public.fim_events
+            WHERE detected_at >= NOW() - INTERVAL '24 hours'
+              AND severity = 'CRITICAL';
+            """
+        )
+        fim_critical_24h = cur.fetchone()[0] or 0
+
         cur.close()
         conn.close()
 
@@ -609,6 +631,9 @@ def get_metrics():
                 "activeAgents": int(active_agents),
                 "anomalies": int(anomalies),
                 "passiveScans": int(passive_scans),
+                "filesMonitored": int(files_monitored),
+                "fimChanges24h": int(fim_changes_24h),
+                "fimCritical24h": int(fim_critical_24h),
             }
         )
 
@@ -1313,6 +1338,82 @@ def get_nmap_findings():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
+# API: FIM (file integrity monitoring) events
+# -----------------------------
+
+@app.route("/api/fim_events", methods=["GET"])
+def get_fim_events():
+    """
+    FIM events API.
+    Supports filtering by file path, event type, severity, date range, with pagination.
+    """
+    try:
+        page = _safe_int(request.args.get("page"), 1, min_value=1)
+        limit = _safe_int(request.args.get("limit"), 50, min_value=1, max_value=200)
+        offset = (page - 1) * limit
+
+        file_path = (request.args.get("file_path") or request.args.get("q") or "").strip()
+        event_type = (request.args.get("event_type") or "").strip().lower()
+        sev_param = normalize_sev_param(request.args.get("severity") or "")
+
+        dt_from = _parse_dt_param(request.args.get("from"))
+        dt_to = _parse_dt_param(request.args.get("to"))
+
+        where = ["1=1"]
+        params: List[Any] = []
+
+        if file_path:
+            where.append("file_path ILIKE %s")
+            params.append(f"%{file_path}%")
+
+        if event_type and event_type != "all":
+            where.append("event_type = %s")
+            params.append(event_type)
+
+        if sev_param:
+            where.append("COALESCE(severity,'LOW') = %s")
+            params.append(sev_param)
+
+        _apply_time_range(where, params, "detected_at", dt_from, dt_to)
+
+        where_sql = " AND ".join(where)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT COUNT(*) FROM public.fim_events WHERE {where_sql};", params)
+        total = int(cur.fetchone()[0] or 0)
+
+        cur.execute(
+            f"""
+            SELECT
+                id, file_path, event_type, old_hash, new_hash, old_mode, new_mode,
+                detected_at, COALESCE(severity,'LOW') AS severity
+            FROM public.fim_events
+            WHERE {where_sql}
+            ORDER BY detected_at DESC
+            LIMIT %s OFFSET %s;
+            """,
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        events = []
+        for r in rows:
+            events.append({
+                "id": r[0], "file_path": r[1], "event_type": r[2],
+                "old_hash": r[3], "new_hash": r[4], "old_mode": r[5], "new_mode": r[6],
+                "detected_at": _format_dt(r[7]), "severity": r[8],
+            })
+
+        total_pages = (total + limit - 1) // limit if total else 1
+        return jsonify({"events": events, "total": total, "totalPages": total_pages, "page": page})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# -----------------------------
 # API: export (allowed sources only)
 # -----------------------------
 
@@ -1402,6 +1503,7 @@ def home():
                 "/api/ftp_logs",
                 "/api/ssh_events",
                 "/api/nmap_findings",
+                "/api/fim_events",
                 "/api/export",
                 "/api/alerts",
                 "/api/ai/analyze",
@@ -1614,6 +1716,33 @@ def get_alert(alert_id: int):
                          "state": r.get("state"), "service": r.get("service")},
                     )
 
+            # fim_events
+            if ids_by_type.get("fim_events"):
+                cur.execute(
+                    """
+                    SELECT id, file_path, event_type, old_hash, new_hash, old_mode, new_mode,
+                           detected_at, COALESCE(severity,'LOW') AS severity
+                    FROM fim_events
+                    WHERE id = ANY(%s)
+                    ORDER BY detected_at DESC
+                    """,
+                    (ids_by_type["fim_events"],),
+                )
+                for r in cur.fetchall():
+                    msg = (
+                        f"path={r.get('file_path')}, type={r.get('event_type')}, "
+                        f"old_hash={r.get('old_hash')}, new_hash={r.get('new_hash')}"
+                    )
+                    add_item(
+                        "fim_events",
+                        r["detected_at"],
+                        r.get("file_path") or "",
+                        msg,
+                        {"id": r["id"], "event_type": r.get("event_type"),
+                         "old_mode": r.get("old_mode"), "new_mode": r.get("new_mode"),
+                         "severity": r.get("severity") or "LOW"},
+                    )
+
             # Backwards-compatible "linked_logs" (logs table only)
             linked_logs = []
             for it in linked_items:
@@ -1793,6 +1922,33 @@ def export_alert_logs_csv(alert_id: int):
                     }
                 )
 
+        # fim_events
+        if ids_by_type.get("fim_events"):
+            cur.execute(
+                """
+                SELECT id,
+                       detected_at AS time,
+                       file_path AS source,
+                       COALESCE(severity,'LOW') AS severity,
+                       ('type=' || event_type || ' old_hash=' || COALESCE(old_hash,'') || ' new_hash=' || COALESCE(new_hash,'')) AS message
+                FROM fim_events
+                WHERE id = ANY(%s)
+                ORDER BY detected_at DESC
+                """,
+                (ids_by_type["fim_events"],),
+            )
+            for r in cur.fetchall():
+                rows_out.append(
+                    {
+                        "log_type": "fim_events",
+                        "id": r["id"],
+                        "time": _format_dt(r["time"]),
+                        "source": r["source"] or "",
+                        "severity": r.get("severity") or "LOW",
+                        "message": r["message"] or "",
+                    }
+                )
+
         cur.close()
         conn.close()
 
@@ -1897,6 +2053,21 @@ def severity_summary():
         )
         for host, port, state, service, cnt in cur.fetchall():
             sev = compute_nmap_severity(host, state, service, port)
+            bump(sev, cnt)
+
+        # -------------------------
+        # 4) FIM (structured table)
+        # -------------------------
+        cur.execute(
+            """
+            SELECT severity, COUNT(*)
+            FROM public.fim_events
+            WHERE detected_at >= NOW() - (%s || ' hours')::interval
+            GROUP BY severity;
+            """,
+            (hours_int,),
+        )
+        for sev, cnt in cur.fetchall():
             bump(sev, cnt)
 
         cur.close()

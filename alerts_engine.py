@@ -16,10 +16,12 @@ Other supported alert sources:
 - Critical RMDIR (logs)
 - Nmap: New Port Detected (nmap_findings)
 - Web: traffic detections from apache access logs in logs
+- FIM: file integrity changes on watched files/webroot (fim_events)
 """
 
 from __future__ import annotations
 from datetime import datetime, timezone
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -83,6 +85,24 @@ WEB_SENSITIVE_PATHS = (
 )
 
 WEB_SUSPICIOUS_METHODS = {"TRACE", "CONNECT", "PUT", "DELETE"}
+
+# -------------------------------
+# FIM (file integrity monitoring) tunables
+# -------------------------------
+FIM_LOOKBACK_MINUTES = 15
+FIM_CORRELATION_WINDOW_MINUTES = 30
+
+# Files that always classify as CRITICAL on any event (privilege escalation / persistence risk).
+# Env-overridable (matches fim_monitor.py) so test scenarios can safely exercise the CRITICAL
+# path on a dummy file instead of the real /etc/passwd, /etc/shadow, /etc/sudoers.
+FIM_SENSITIVE_FILES = {
+    p.strip() for p in os.environ.get(
+        "FIM_SENSITIVE_FILES", "/etc/passwd,/etc/shadow,/etc/sudoers"
+    ).split(",") if p.strip()
+}
+
+# Directories treated as web-facing (new file here = possible web shell)
+FIM_WEBROOT_PREFIXES = ("/var/www/html",)
 
 
 # -------------------------------
@@ -1050,6 +1070,109 @@ def recon_campaign_rule(cur):
         )
 
 
+def fim_alert_exists_for_event(cur, event_id: int) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM alert_log_links allk
+        JOIN alerts a ON a.id = allk.alert_id
+        WHERE allk.log_type = 'fim_events'
+          AND allk.log_id = %s
+          AND a.status <> 'resolved'
+        LIMIT 1
+        """,
+        (event_id,),
+    )
+    return cur.fetchone() is not None
+
+
+def fim_events_rule(cur):
+    """
+    Rule 10: File Integrity Monitoring.
+
+    - modified / added / permission_changed on any watched file -> HIGH
+    - any event on /etc/passwd, /etc/shadow, /etc/sudoers -> CRITICAL
+      (possible privilege escalation / persistence)
+    - new file added under the web root -> HIGH (possible web shell)
+    - deleted on a non-sensitive file is logged in fim_events but not
+      alert-worthy on its own
+
+    Compound correlation: if this event lands within FIM_CORRELATION_WINDOW_MINUTES
+    of a CRITICAL alert from any other source, annotate it as a possible
+    post-compromise indicator (FIM events are file-scoped, not IP-scoped, so they
+    can't plug into the IP-keyed cross-source correlation used elsewhere).
+    """
+    cur.execute(
+        """
+        SELECT id, file_path, event_type, old_hash, new_hash, old_mode, new_mode, detected_at
+        FROM public.fim_events
+        WHERE detected_at >= NOW() - (%s || ' minutes')::interval
+        ORDER BY detected_at
+        """,
+        (FIM_LOOKBACK_MINUTES,),
+    )
+
+    for eid, path, etype, old_hash, new_hash, old_mode, new_mode, detected_at in cur.fetchall():
+        if fim_alert_exists_for_event(cur, eid):
+            continue
+
+        is_sensitive = path in FIM_SENSITIVE_FILES
+        is_alertable = is_sensitive or etype in ("modified", "added", "permission_changed")
+        if not is_alertable:
+            continue
+
+        if is_sensitive:
+            priority = "critical"
+            title = f"FIM: Critical System File {etype.replace('_', ' ').title()}"
+        elif etype == "added" and path.startswith(FIM_WEBROOT_PREFIXES):
+            priority = "high"
+            title = "FIM: New File in Webroot (Possible Web Shell)"
+        else:
+            priority = "high"
+            title = f"FIM: {etype.replace('_', ' ').title()}"
+
+        description = (
+            f"File integrity change detected. path={path}, type={etype}, "
+            f"old_hash={old_hash}, new_hash={new_hash}, old_mode={old_mode}, new_mode={new_mode}"
+        )
+
+        alert_id = create_alert(
+            cur,
+            priority=priority,
+            title=title,
+            description=description,
+            source="fim",
+            ip_address=None,
+            file_target=path,
+            last_event_time=detected_at,
+        )
+        link_alert(cur, alert_id, "fim_events", eid)
+
+        cur.execute(
+            """
+            SELECT id, title, source
+            FROM alerts
+            WHERE priority = 'critical'
+              AND source <> 'fim'
+              AND created_at >= %s - (%s || ' minutes')::interval
+              AND created_at <= %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (detected_at, FIM_CORRELATION_WINDOW_MINUTES, detected_at),
+        )
+        prior_critical = cur.fetchone()
+        if prior_critical:
+            prior_id, prior_title, prior_source = prior_critical
+            _append_alert_description(
+                cur,
+                int(alert_id),
+                f"[correlation] Possible post-compromise indicator: file change follows CRITICAL "
+                f"alert_id={prior_id} ({prior_title}, source={prior_source}) within "
+                f"{FIM_CORRELATION_WINDOW_MINUTES} min",
+            )
+
+
 # -------------------------------
 # Run
 # -------------------------------
@@ -1069,6 +1192,7 @@ def main():
                 mass_delete_rule(cur)
                 critical_rmdir_rule(cur)
                 nmap_new_port_rule(cur)
+                fim_events_rule(cur)
 
         print("Alerts engine executed successfully")
     finally:

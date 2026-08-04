@@ -368,6 +368,30 @@
   color: #64748b;
 }
 
+.badge-modified {
+  border-color: rgba(255, 170, 0, 0.35);
+  background: rgba(255, 170, 0, 0.08);
+  color: #ffaa00;
+}
+
+.badge-added {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: rgba(0, 212, 255, 0.08);
+  color: #00d4ff;
+}
+
+.badge-deleted {
+  border-color: rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.06);
+  color: #94a3b8;
+}
+
+.badge-permission_changed {
+  border-color: rgba(255, 51, 102, 0.38);
+  background: rgba(255, 51, 102, 0.09);
+  color: #ff3366;
+}
+
 /* ── Severity variants ── */
 .sev-badge {
   display: inline-flex;

@@ -49,6 +49,10 @@ function Header({ lastUpdated }) {
             Network Events
           </NavLink>
 
+          <NavLink to="/fim" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            File Integrity
+          </NavLink>
+
           <NavLink to="/ai" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             AI Insights
           </NavLink>
