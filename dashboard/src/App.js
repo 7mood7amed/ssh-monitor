@@ -12,6 +12,7 @@ import NmapPage from "./pages/NmapPage";
 import AIInsights from "./components/AIInsights";
 import NetworkEvents from "./pages/NetworkEvents";
 import FimPage from "./pages/FimPage";
+import SnortPage from "./pages/SnortPage";
 
 import "./App.css";
 
@@ -42,6 +43,7 @@ function App() {
           <Route path="/nmap" element={<NmapPage />} />
           <Route path="/ai" element={<AIInsights refreshTrigger={refreshTrigger} />} />
           <Route path="/network-events" element={<NetworkEvents />} />
+          <Route path="/snort" element={<SnortPage refreshTrigger={refreshTrigger} />} />
           <Route path="/fim" element={<FimPage refreshTrigger={refreshTrigger} />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />

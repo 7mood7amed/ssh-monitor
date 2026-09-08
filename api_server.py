@@ -437,7 +437,7 @@ def get_agents():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        allowed_agents = ["SSH", "FTP", "APACHE", "NMAP", "TSHARK", "FIM"]
+        allowed_agents = ["SSH", "FTP", "APACHE", "NMAP", "TSHARK", "FIM", "SNORT"]
 
         cur.execute(
             """
@@ -546,7 +546,7 @@ def get_metrics():
                 END
             )
             FROM public.agent_status
-            WHERE agent_name IN ('SSH', 'FTP', 'APACHE', 'NMAP', 'TSHARK', 'FIM');
+            WHERE agent_name IN ('SSH', 'FTP', 'APACHE', 'NMAP', 'TSHARK', 'FIM', 'SNORT');
             """
         )
         active_agents = cur.fetchone()[0] or 0
@@ -622,6 +622,25 @@ def get_metrics():
         )
         fim_critical_24h = cur.fetchone()[0] or 0
 
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM public.snort_alerts
+            WHERE captured_at >= NOW() - INTERVAL '24 hours';
+            """
+        )
+        snort_alerts_24h = cur.fetchone()[0] or 0
+
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM public.snort_alerts
+            WHERE captured_at >= NOW() - INTERVAL '24 hours'
+              AND severity = 'CRITICAL';
+            """
+        )
+        snort_critical_24h = cur.fetchone()[0] or 0
+
         cur.close()
         conn.close()
 
@@ -634,6 +653,8 @@ def get_metrics():
                 "filesMonitored": int(files_monitored),
                 "fimChanges24h": int(fim_changes_24h),
                 "fimCritical24h": int(fim_critical_24h),
+                "snortAlerts24h": int(snort_alerts_24h),
+                "snortCritical24h": int(snort_critical_24h),
             }
         )
 
@@ -1199,6 +1220,236 @@ def get_ftp_logs():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
+# API: packet events (TShark)
+# -----------------------------
+
+@app.route("/api/packet_events", methods=["GET"])
+def get_packet_events():
+    """
+    Reads from public.packet_events (structured TShark captures, threats only —
+    the collector only ever writes rows that tripped an anomaly rule).
+    Server-side pagination + filters, mirroring /api/alerts.
+
+    Query params:
+      page, limit
+      q (search src_ip/dst_ip/info/raw)
+      src_ip, dst_ip
+      protocol
+      severity (low|medium|high|critical)
+      status (new|acknowledged|resolved)
+      include_internal (1/0) — include rows whose src_ip is 127.0.0.1/::1
+
+    Returns:
+      { items: [...], total, totalPages, page }
+    """
+    try:
+        page = _safe_int(request.args.get("page"), 1, min_value=1)
+        limit = _safe_int(request.args.get("limit"), 50, min_value=1, max_value=200)
+        offset = (page - 1) * limit
+
+        q = (request.args.get("q") or "").strip()
+        src_ip = (request.args.get("src_ip") or "").strip()
+        dst_ip = (request.args.get("dst_ip") or "").strip()
+        protocol = (request.args.get("protocol") or "").strip().upper()
+        severity = (request.args.get("severity") or "").strip().lower()
+        status = (request.args.get("status") or "").strip().lower()
+
+        include_internal = request.args.get("include_internal", "1")
+        include_internal = str(include_internal).strip().lower() not in {"0", "false", "no", "off"}
+
+        where = ["1=1"]
+        params: List[Any] = []
+
+        if q:
+            where.append("""
+              (
+                COALESCE(src_ip,'') ILIKE %s OR
+                COALESCE(dst_ip,'') ILIKE %s OR
+                COALESCE(info,'') ILIKE %s OR
+                COALESCE(raw,'') ILIKE %s
+              )
+            """)
+            params.extend([f"%{q}%"] * 4)
+
+        if src_ip:
+            where.append("src_ip ILIKE %s")
+            params.append(f"%{src_ip}%")
+
+        if dst_ip:
+            where.append("dst_ip ILIKE %s")
+            params.append(f"%{dst_ip}%")
+
+        if protocol and protocol != "ALL":
+            where.append("protocol = %s")
+            params.append(protocol)
+
+        if severity and severity != "all":
+            where.append("severity = %s")
+            params.append(severity)
+
+        if status and status != "all":
+            where.append("status = %s")
+            params.append(status)
+
+        if not include_internal:
+            where.append("(src_ip IS NULL OR src_ip NOT IN ('127.0.0.1', '::1'))")
+
+        where_sql = " AND ".join(where)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT COUNT(*) FROM public.packet_events WHERE {where_sql};", params)
+        total = int(cur.fetchone()[0] or 0)
+
+        cur.execute(
+            f"""
+            SELECT id, captured_at, src_ip, dst_ip, src_port, dst_port,
+                   protocol, length, info, anomaly, severity, raw, status
+            FROM public.packet_events
+            WHERE {where_sql}
+            ORDER BY captured_at DESC
+            LIMIT %s OFFSET %s;
+            """,
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        items = [
+            {
+                "id": r[0],
+                "captured_at": _format_dt(r[1]),
+                "src_ip": r[2],
+                "dst_ip": r[3],
+                "src_port": r[4],
+                "dst_port": r[5],
+                "protocol": r[6],
+                "length": r[7],
+                "info": r[8],
+                "anomaly": r[9],
+                "severity": r[10],
+                "raw": r[11],
+                "status": r[12],
+            }
+            for r in rows
+        ]
+
+        total_pages = (total + limit - 1) // limit if total else 1
+        return jsonify({"items": items, "total": total, "totalPages": total_pages, "page": page})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/api/packet_events/<int:event_id>")
+def get_packet_event(event_id: int):
+    """Single packet_events row, shaped like /api/alerts/<id> (alert + linked_items)
+    so the details panel can reuse the same layout — here the packet capture itself
+    is the one piece of "evidence", since each row is already a deduped anomaly."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, captured_at, src_ip, dst_ip, src_port, dst_port,
+                       protocol, length, info, anomaly, severity, raw, status
+                FROM packet_events
+                WHERE id = %s
+                """,
+                (event_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "Packet event not found"}), 404
+
+            event = dict(row)
+            event["captured_at"] = _format_dt(event["captured_at"])
+
+            linked_items = [{
+                "log_type": "packet_events",
+                "time": event["captured_at"],
+                "source": "/usr/bin/tshark",
+                "message": event["raw"] or event["info"] or "",
+                "protocol": event["protocol"],
+                "length": event["length"],
+            }]
+
+            return jsonify({"event": event, "linked_items": linked_items})
+    finally:
+        conn.close()
+
+
+@app.patch("/api/packet_events/<int:event_id>")
+def update_packet_event_status(event_id: int):
+    data = request.get_json(silent=True) or {}
+    new_status = (data.get("status") or "").strip().lower()
+
+    allowed = {"new", "acknowledged", "resolved"}
+    if new_status not in allowed:
+        return jsonify({"error": f"Invalid status. Allowed: {sorted(allowed)}"}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE packet_events SET status=%s WHERE id=%s", (new_status, event_id))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "Packet event not found"}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True, "id": event_id, "status": new_status})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/api/packet_events/<int:event_id>/export_csv")
+def export_packet_event_csv(event_id: int):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cur.execute(
+            """
+            SELECT id, captured_at, src_ip, dst_ip, src_port, dst_port,
+                   protocol, length, info, anomaly, severity, raw, status
+            FROM packet_events
+            WHERE id = %s
+            """,
+            (event_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not row:
+            return jsonify({"error": "Packet event not found"}), 404
+
+        lines = ["captured_at,src_ip,dst_ip,src_port,dst_port,protocol,length,anomaly,severity,status,info,raw"]
+        vals = [
+            _format_dt(row["captured_at"]), row["src_ip"] or "", row["dst_ip"] or "",
+            row["src_port"] or "", row["dst_port"] or "", row["protocol"] or "",
+            row["length"] or "", row["anomaly"] or "", row["severity"] or "",
+            row["status"] or "", (row["info"] or "").replace(",", " "), (row["raw"] or "").replace(",", " "),
+        ]
+        lines.append(",".join(str(v) for v in vals))
+
+        csv_data = "\n".join(lines)
+        return (
+            csv_data,
+            200,
+            {
+                "Content-Type": "text/csv",
+                "Content-Disposition": f"attachment; filename=packet_event_{event_id}.csv",
+            },
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# -----------------------------
 # API: nmap findings
 # -----------------------------
 
@@ -1414,6 +1665,92 @@ def get_fim_events():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------
+# API: Snort IDS alerts
+# -----------------------------
+
+@app.route("/api/snort_alerts", methods=["GET"])
+def get_snort_alerts():
+    """
+    Snort IDS alerts API.
+    Supports filtering by src/dst IP, sid, severity, date range, with pagination.
+    """
+    try:
+        page = _safe_int(request.args.get("page"), 1, min_value=1)
+        limit = _safe_int(request.args.get("limit"), 50, min_value=1, max_value=200)
+        offset = (page - 1) * limit
+
+        q = (request.args.get("q") or "").strip()
+        src_ip = (request.args.get("src_ip") or "").strip()
+        dst_ip = (request.args.get("dst_ip") or "").strip()
+        sid = (request.args.get("sid") or "").strip()
+        sev_param = normalize_sev_param(request.args.get("severity") or "")
+
+        dt_from = _parse_dt_param(request.args.get("from"))
+        dt_to = _parse_dt_param(request.args.get("to"))
+
+        where = ["1=1"]
+        params: List[Any] = []
+
+        if q:
+            where.append("(COALESCE(message,'') ILIKE %s OR COALESCE(classification,'') ILIKE %s)")
+            params.extend([f"%{q}%"] * 2)
+
+        if src_ip:
+            where.append("src_ip ILIKE %s")
+            params.append(f"%{src_ip}%")
+
+        if dst_ip:
+            where.append("dst_ip ILIKE %s")
+            params.append(f"%{dst_ip}%")
+
+        if sid:
+            where.append("sid = %s")
+            params.append(sid)
+
+        if sev_param:
+            where.append("COALESCE(severity,'LOW') = %s")
+            params.append(sev_param)
+
+        _apply_time_range(where, params, "captured_at", dt_from, dt_to)
+
+        where_sql = " AND ".join(where)
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute(f"SELECT COUNT(*) FROM public.snort_alerts WHERE {where_sql};", params)
+        total = int(cur.fetchone()[0] or 0)
+
+        cur.execute(
+            f"""
+            SELECT
+                id, captured_at, gid, sid, rev, message, classification, priority,
+                protocol, src_ip, src_port, dst_ip, dst_port, COALESCE(severity,'LOW') AS severity
+            FROM public.snort_alerts
+            WHERE {where_sql}
+            ORDER BY captured_at DESC
+            LIMIT %s OFFSET %s;
+            """,
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        events = []
+        for r in rows:
+            events.append({
+                "id": r[0], "captured_at": _format_dt(r[1]), "gid": r[2], "sid": r[3], "rev": r[4],
+                "message": r[5], "classification": r[6], "priority": r[7], "protocol": r[8],
+                "src_ip": r[9], "src_port": r[10], "dst_ip": r[11], "dst_port": r[12], "severity": r[13],
+            })
+
+        total_pages = (total + limit - 1) // limit if total else 1
+        return jsonify({"events": events, "total": total, "totalPages": total_pages, "page": page})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# -----------------------------
 # API: export (allowed sources only)
 # -----------------------------
 
@@ -1504,6 +1841,7 @@ def home():
                 "/api/ssh_events",
                 "/api/nmap_findings",
                 "/api/fim_events",
+                "/api/snort_alerts",
                 "/api/export",
                 "/api/alerts",
                 "/api/ai/analyze",
@@ -1743,6 +2081,33 @@ def get_alert(alert_id: int):
                          "severity": r.get("severity") or "LOW"},
                     )
 
+            # snort_alerts
+            if ids_by_type.get("snort_alerts"):
+                cur.execute(
+                    """
+                    SELECT id, captured_at, sid, message, classification, priority, protocol,
+                           src_ip, src_port, dst_ip, dst_port, COALESCE(severity,'LOW') AS severity
+                    FROM snort_alerts
+                    WHERE id = ANY(%s)
+                    ORDER BY captured_at DESC
+                    """,
+                    (ids_by_type["snort_alerts"],),
+                )
+                for r in cur.fetchall():
+                    msg = (
+                        f"sid={r.get('sid')}, {r.get('message')}, "
+                        f"{r.get('src_ip')}:{r.get('src_port')} -> {r.get('dst_ip')}:{r.get('dst_port')}"
+                    )
+                    add_item(
+                        "snort_alerts",
+                        r["captured_at"],
+                        r.get("src_ip") or "",
+                        msg,
+                        {"id": r["id"], "sid": r.get("sid"), "classification": r.get("classification"),
+                         "priority": r.get("priority"), "protocol": r.get("protocol"),
+                         "severity": r.get("severity") or "LOW"},
+                    )
+
             # Backwards-compatible "linked_logs" (logs table only)
             linked_logs = []
             for it in linked_items:
@@ -1949,6 +2314,33 @@ def export_alert_logs_csv(alert_id: int):
                     }
                 )
 
+        # snort_alerts
+        if ids_by_type.get("snort_alerts"):
+            cur.execute(
+                """
+                SELECT id,
+                       captured_at AS time,
+                       src_ip AS source,
+                       COALESCE(severity,'LOW') AS severity,
+                       ('sid=' || COALESCE(sid::text,'') || ' ' || COALESCE(message,'') || ' -> ' || COALESCE(dst_ip,'') || ':' || COALESCE(dst_port::text,'')) AS message
+                FROM snort_alerts
+                WHERE id = ANY(%s)
+                ORDER BY captured_at DESC
+                """,
+                (ids_by_type["snort_alerts"],),
+            )
+            for r in cur.fetchall():
+                rows_out.append(
+                    {
+                        "log_type": "snort_alerts",
+                        "id": r["id"],
+                        "time": _format_dt(r["time"]),
+                        "source": r["source"] or "",
+                        "severity": r.get("severity") or "LOW",
+                        "message": r["message"] or "",
+                    }
+                )
+
         cur.close()
         conn.close()
 
@@ -2063,6 +2455,21 @@ def severity_summary():
             SELECT severity, COUNT(*)
             FROM public.fim_events
             WHERE detected_at >= NOW() - (%s || ' hours')::interval
+            GROUP BY severity;
+            """,
+            (hours_int,),
+        )
+        for sev, cnt in cur.fetchall():
+            bump(sev, cnt)
+
+        # -------------------------
+        # 5) Snort (structured table)
+        # -------------------------
+        cur.execute(
+            """
+            SELECT severity, COUNT(*)
+            FROM public.snort_alerts
+            WHERE captured_at >= NOW() - (%s || ' hours')::interval
             GROUP BY severity;
             """,
             (hours_int,),

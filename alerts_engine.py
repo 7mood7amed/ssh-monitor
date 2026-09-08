@@ -104,6 +104,15 @@ FIM_SENSITIVE_FILES = {
 # Directories treated as web-facing (new file here = possible web shell)
 FIM_WEBROOT_PREFIXES = ("/var/www/html",)
 
+# -------------------------------
+# Snort tunables
+# -------------------------------
+SNORT_LOOKBACK_MINUTES = 15
+SNORT_DEDUPE_MINUTES = 10
+
+# Snort's own 1-4 priority scale -> Raven's severity scheme (1 = highest)
+SNORT_PRIORITY_TO_PRIORITY = {1: "critical", 2: "high", 3: "medium", 4: "low"}
+
 
 # -------------------------------
 # DB helpers
@@ -1173,6 +1182,90 @@ def fim_events_rule(cur):
             )
 
 
+def snort_alert_rule(cur):
+    """
+    Rule 11: Snort IDS alerts (exploit signatures / payload-content detection --
+    the category TShark's packet-counting heuristics can't cover).
+
+    Snort's own priority (1-4, 1=highest) maps directly to Raven's severity
+    scheme. Grouped by (message, src_ip) using the same cooldown/append
+    pattern as the SSH/FTP brute-force rules, since a single scan or attack
+    burst can produce many matching packets in a short window -- one alert
+    per burst, not one per packet.
+
+    Unlike FIM, Snort alerts carry a real src_ip, so (unlike fim_events_rule)
+    they participate in the existing IP-keyed cross-source correlation in
+    ai_engine.py's cross_reference().
+    """
+    cur.execute(
+        """
+        SELECT id, message, classification, priority, protocol,
+               src_ip, src_port, dst_ip, dst_port, captured_at
+        FROM public.snort_alerts
+        WHERE captured_at >= NOW() - (%s || ' minutes')::interval
+        ORDER BY captured_at
+        """,
+        (SNORT_LOOKBACK_MINUTES,),
+    )
+    rows = cur.fetchall()
+
+    groups: Dict[Tuple[str, str], list] = {}
+    for row in rows:
+        message, src_ip = row[1], row[5]
+        key = (message, src_ip or "(unknown)")
+        groups.setdefault(key, []).append(row)
+
+    for (message, ip_key), group_rows in groups.items():
+        group_rows.sort(key=lambda r: r[9])  # captured_at
+        alert_ids = [r[0] for r in group_rows]
+        _, _, classification, priority, protocol, src_ip, src_port, dst_ip, dst_port, last_seen = group_rows[-1]
+
+        title = f"Snort: {message}"
+        source = "snort"
+        priority_label = SNORT_PRIORITY_TO_PRIORITY.get(priority, "medium")
+        user_key = "(n/a)"  # Snort alerts have no username concept; constant so the grouped-lookup exact-match works
+
+        latest = _get_latest_alert_for_key(cur, title=title, source=source, ip_address=ip_key, user_name=user_key)
+
+        if latest:
+            alert_id, status, created_at, last_event_time = latest
+
+            if not _new_evidence_after_last_event(last_seen, last_event_time):
+                continue
+
+            if (status or "").lower() != "resolved" and _within_cooldown(created_at):
+                _update_alert_last_event_time(cur, int(alert_id), last_seen)
+                _append_alert_description(
+                    cur,
+                    int(alert_id),
+                    f"[grouped] New Snort match(es): +{len(group_rows)} (last_seen={last_seen})",
+                )
+                for aid in alert_ids:
+                    link_alert(cur, int(alert_id), "snort_alerts", int(aid))
+                continue
+
+        description = (
+            f"Snort IDS alert. message={message}, classification={classification}, "
+            f"priority={priority}, protocol={protocol}, "
+            f"{src_ip}:{src_port} -> {dst_ip}:{dst_port}, count={len(group_rows)}"
+        )
+
+        new_alert_id = create_alert(
+            cur,
+            priority=priority_label,
+            title=title,
+            description=description,
+            source=source,
+            user_name=user_key,
+            ip_address=src_ip,
+            file_target=f"{dst_ip}:{dst_port}" if dst_ip else None,
+            last_event_time=last_seen,
+        )
+
+        for aid in alert_ids:
+            link_alert(cur, int(new_alert_id), "snort_alerts", int(aid))
+
+
 # -------------------------------
 # Run
 # -------------------------------
@@ -1193,6 +1286,7 @@ def main():
                 critical_rmdir_rule(cur)
                 nmap_new_port_rule(cur)
                 fim_events_rule(cur)
+                snort_alert_rule(cur)
 
         print("Alerts engine executed successfully")
     finally:

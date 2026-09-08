@@ -305,6 +305,14 @@ function buildReasoningPoints(data, correlationData) {
     points.push(`${totals.fim_changes} file integrity change(s) were observed on watched files.`);
   }
 
+  if ((totals?.snort_critical_alerts ?? 0) > 0) {
+    points.push(
+      `Risk driver: Snort IDS matched ${totals.snort_critical_alerts} critical-severity exploit/attack signature(s) in network traffic.`
+    );
+  } else if ((totals?.snort_alerts ?? 0) > 0) {
+    points.push(`${totals.snort_alerts} Snort IDS signature match(es) were observed in network traffic.`);
+  }
+
   if (topExternal?.ip) {
     points.push(`The strongest external suspicious source currently maps to ${topExternal.ip}.`);
   }
@@ -357,6 +365,7 @@ function getCampaignAssessment(data, correlationData) {
   const sshFailures = data?.report_data?.totals?.ssh_failures || 0;
   const ftpFailures = data?.report_data?.totals?.ftp_failures || 0;
   const fimCritical = data?.report_data?.totals?.fim_critical_changes || 0;
+  const snortCritical = data?.report_data?.totals?.snort_critical_alerts || 0;
 
   const multiSourceCount = safeArray(
     correlationData?.multi_source_ips ||
@@ -364,14 +373,17 @@ function getCampaignAssessment(data, correlationData) {
     data?.report_data?.multi_source_ips
   ).length;
 
-  if (alerts >= 8 || sshFailures >= 25 || ftpFailures >= 25 || fimCritical >= 1) {
-    return {
-      severity: "critical",
-      title: fimCritical >= 1 ? "Critical System File Tampering" : "Coordinated Attack Activity",
-      summary: fimCritical >= 1
-        ? "A critical system file (passwd/shadow/sudoers) was modified — possible privilege escalation or persistence requiring immediate review."
-        : "Multiple high-volume indicators suggest an active attack campaign requiring immediate review.",
-    };
+  if (alerts >= 8 || sshFailures >= 25 || ftpFailures >= 25 || fimCritical >= 1 || snortCritical >= 1) {
+    let title = "Coordinated Attack Activity";
+    let summary = "Multiple high-volume indicators suggest an active attack campaign requiring immediate review.";
+    if (fimCritical >= 1) {
+      title = "Critical System File Tampering";
+      summary = "A critical system file (passwd/shadow/sudoers) was modified — possible privilege escalation or persistence requiring immediate review.";
+    } else if (snortCritical >= 1) {
+      title = "Critical Exploit Signature Matched";
+      summary = "Snort IDS matched a critical-severity known exploit or attack signature in network traffic — requires immediate review.";
+    }
+    return { severity: "critical", title, summary };
   }
 
   if (multiSourceCount >= 2 || sshFailures >= 6 || ftpFailures >= 6) {
@@ -523,6 +535,10 @@ export default function AIInsights({ refreshTrigger }) {
         file_path: f.file_path, event_type: f.event_type, severity: f.severity, count: f.count,
       }));
 
+      const snortSummary = (analyzeJson?.report_data?.top_snort_alerts || []).map(s => ({
+        message: s.message, severity: s.severity, src_ip: s.src_ip, count: s.count,
+      }));
+
       const evidence = {
         risk_score: risk.score ?? 0,
         risk_level: (risk.level || "unknown").toUpperCase(),
@@ -532,15 +548,17 @@ export default function AIInsights({ refreshTrigger }) {
         attack_stages: stages,
         top_correlated_ips: topIps,
         fim_summary: fimSummary,
+        snort_summary: snortSummary,
         multi_source_ip_count: (analyzeJson?.correlations?.multi_source_ips || []).length,
       };
 
       const systemPrompt =
         "You are a cybersecurity analyst assistant embedded in Raven, a multi-protocol security monitoring system running Llama 3.1 via Groq. " +
         "You receive structured security evidence collected from SSH logs, FTP logs, Apache web logs, " +
-        "Nmap port scans, TShark packet captures, and file integrity monitoring (FIM) of critical system files and the web root. " +
+        "Nmap port scans, TShark packet captures, file integrity monitoring (FIM) of critical system files and the web root, " +
+        "and Snort IDS alerts (signature-based detection of known exploits, malware traffic, and attack payloads). " +
         "Write a concise professional security analysis narrative strictly based on the provided data. " +
-        "Rules: Never invent IPs, usernames, counts, file paths, event types, or events not in the data. " +
+        "Rules: Never invent IPs, usernames, counts, file paths, event types, signature messages, or events not in the data. " +
         "Distinguish internal/trusted hosts from external/suspicious sources. " +
         "Identify the most significant threats first. " +
         "Call out multi-source correlation when one IP appears across multiple services. " +
@@ -892,6 +910,11 @@ export default function AIInsights({ refreshTrigger }) {
             label="FIM Changes"
             value={analyzeData?.report_data?.totals?.fim_changes ?? 0}
             tone={(analyzeData?.report_data?.totals?.fim_critical_changes ?? 0) > 0 ? "danger" : undefined}
+          />
+          <SectionChip
+            label="Snort Alerts"
+            value={analyzeData?.report_data?.totals?.snort_alerts ?? 0}
+            tone={(analyzeData?.report_data?.totals?.snort_critical_alerts ?? 0) > 0 ? "danger" : undefined}
           />
         </div>
 

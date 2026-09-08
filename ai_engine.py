@@ -159,12 +159,13 @@ class RavenAIEngine:
             "You are a cybersecurity analyst assistant embedded in Raven, "
             "a multi-protocol security monitoring system. "
             "You receive structured security data collected from SSH logs, FTP logs, "
-            "Apache web logs, Nmap port scans, TShark packet captures, and file integrity "
-            "monitoring (FIM) of critical system files and the web root. "
+            "Apache web logs, Nmap port scans, TShark packet captures, file integrity "
+            "monitoring (FIM) of critical system files and the web root, and Snort IDS alerts "
+            "(signature-based detection of known exploits, malware traffic, and attack payloads). "
             "Your job is to write a concise, professional security analysis narrative "
             "based strictly on the provided data. "
             "\n\nRules:"
-            "\n- Never invent IPs, usernames, counts, file paths, event types, or events not present in the data."
+            "\n- Never invent IPs, usernames, counts, file paths, event types, signature messages, or events not present in the data."
             "\n- Clearly distinguish internal/trusted hosts from external/suspicious sources."
             "\n- Use professional SOC analyst language."
             "\n- Identify the most significant threats first."
@@ -204,6 +205,7 @@ class RavenAIEngine:
                 "ftp_fail": c.get("ftp_failures", 0),
                 "web_hits": c.get("web_hits", 0),
                 "alerts":   c.get("alert_count", 0),
+                "snort_alerts": c.get("snort_alert_count", 0),
                 "sources":  c.get("sources", []),
                 "patterns": c.get("probable_patterns", []),
             }
@@ -221,6 +223,7 @@ class RavenAIEngine:
             "attack_stages": stages,
             "top_ips":       top_ips,
             "fim_summary":   report_data.get("top_fim_changes", []),
+            "snort_summary": report_data.get("top_snort_alerts", []),
             "multi_source_ips_count": len(multi),
         }
 
@@ -324,6 +327,16 @@ class RavenAIEngine:
                 facts["fim_changes"] = [dict(r) for r in cur.fetchall()]
 
                 cur.execute("""
+                    SELECT message, severity, src_ip,
+                           COUNT(*) AS count, MAX(captured_at) AS last_seen
+                    FROM public.snort_alerts
+                    WHERE captured_at >= NOW() - (%s || ' hours')::interval
+                    GROUP BY message, severity, src_ip
+                    ORDER BY last_seen DESC LIMIT 50;
+                """, (hours,))
+                facts["snort_alerts"] = [dict(r) for r in cur.fetchall()]
+
+                cur.execute("""
                     SELECT id, created_at, source, priority, title,
                            description, user_name, ip_address, file_target, status
                     FROM public.alerts
@@ -355,7 +368,7 @@ class RavenAIEngine:
         ip_map: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
             "ssh_failures": 0, "ssh_successes": 0,
             "ftp_failures": 0, "ftp_successes": 0,
-            "web_hits": 0, "nmap_ports": [],
+            "web_hits": 0, "nmap_ports": [], "snort_alerts": [],
             "alerts": [], "usernames": set(), "sources": set(),
         })
 
@@ -403,6 +416,15 @@ class RavenAIEngine:
             })
             ip_map[ip]["sources"].add("nmap")
 
+        for row in facts.get("snort_alerts", []):
+            ip = row.get("src_ip")
+            if not ip: continue
+            ip_map[ip]["snort_alerts"].append({
+                "message": row.get("message"), "severity": row.get("severity"),
+                "count": row.get("count"),
+            })
+            ip_map[ip]["sources"].add("snort")
+
         for row in facts.get("alerts", []):
             ip = row.get("ip_address")
             if not ip: continue
@@ -427,6 +449,7 @@ class RavenAIEngine:
                 + data["web_hits"] * 1
                 + len(data["nmap_ports"]) * 2
                 + len(data["alerts"]) * 2
+                + len(data["snort_alerts"]) * 4
             )
 
             probable_patterns = []
@@ -441,6 +464,10 @@ class RavenAIEngine:
             if any(p.get("state") == "open" and p.get("port") in {21, 22, 3389, 3306, 5432}
                    for p in data["nmap_ports"]):
                 probable_patterns.append("sensitive exposed service")
+            if any(str(a.get("severity") or "").upper() == "CRITICAL" for a in data["snort_alerts"]):
+                probable_patterns.append("critical Snort signature match (known exploit/attack pattern)")
+            elif data["snort_alerts"]:
+                probable_patterns.append("signature-matched exploit/attack traffic")
 
             assessment = "trusted local Raven host" if ip_scope == "internal" else "external suspicious source"
 
@@ -456,6 +483,7 @@ class RavenAIEngine:
                 "ftp_successes":  data["ftp_successes"],
                 "web_hits":       data["web_hits"],
                 "nmap_port_count": len(data["nmap_ports"]),
+                "snort_alert_count": len(data["snort_alerts"]),
                 "alert_count":    len(data["alerts"]),
                 "usernames":      sorted([u for u in data["usernames"] if u]),
                 "activity_score": activity_score,
@@ -523,6 +551,18 @@ class RavenAIEngine:
         if fim_total >= 3:
             score += 8; reasons.append(f"{fim_total} file integrity change(s) observed")
 
+        snort_critical_total = sum(
+            _safe_int(x.get("count")) for x in facts.get("snort_alerts", [])
+            if str(x.get("severity") or "").upper() == "CRITICAL"
+        )
+        snort_total = sum(_safe_int(x.get("count")) for x in facts.get("snort_alerts", []))
+
+        if snort_critical_total > 0:
+            score += snort_critical_total * 12
+            reasons.append(f"{snort_critical_total} critical Snort IDS alert(s) (known exploit/attack signature)")
+        if snort_total >= 3:
+            score += 8; reasons.append(f"{snort_total} Snort IDS alert(s) observed")
+
         multi_source_count = len(correlations.get("multi_source_ips", []))
         if multi_source_count > 0:
             score += multi_source_count * 7
@@ -580,6 +620,11 @@ class RavenAIEngine:
                     _safe_int(x.get("count")) for x in facts.get("fim_changes", [])
                     if str(x.get("severity") or "").upper() == "CRITICAL"
                 ),
+                "snort_alerts":          sum(_safe_int(x.get("count")) for x in facts.get("snort_alerts", [])),
+                "snort_critical_alerts": sum(
+                    _safe_int(x.get("count")) for x in facts.get("snort_alerts", [])
+                    if str(x.get("severity") or "").upper() == "CRITICAL"
+                ),
             },
             "top_ssh_failure_ips": [
                 {"ip": x.get("ip"), "username": x.get("username"), "count": x.get("count")}
@@ -599,6 +644,13 @@ class RavenAIEngine:
                     "severity": x.get("severity"), "count": x.get("count"),
                 }
                 for x in facts.get("fim_changes", [])[:5]
+            ],
+            "top_snort_alerts": [
+                {
+                    "message": x.get("message"), "severity": x.get("severity"),
+                    "src_ip": x.get("src_ip"), "count": x.get("count"),
+                }
+                for x in facts.get("snort_alerts", [])[:5]
             ],
             "multi_source_ips": correlations.get("multi_source_ips", [])[:5],
             "recent_alerts": [
@@ -633,6 +685,11 @@ class RavenAIEngine:
             stages.append({
                 "stage": "File Integrity Violation",
                 "evidence": "Unauthorized change detected on a watched file (possible tampering or persistence).",
+            })
+        if any("Snort:" in t for t in titles):
+            stages.append({
+                "stage": "Signature-Matched Attack",
+                "evidence": "Traffic matched a known exploit/attack signature (Snort IDS).",
             })
 
         confidence = "low"
@@ -690,6 +747,16 @@ class RavenAIEngine:
                 f"File integrity monitoring logged {totals['fim_changes']} change(s) to watched files."
             )
 
+        if totals.get("snort_critical_alerts"):
+            lines.append(
+                f"Snort IDS matched {totals['snort_critical_alerts']} critical-severity exploit/attack "
+                f"signature(s) in network traffic."
+            )
+        elif totals.get("snort_alerts"):
+            lines.append(
+                f"Snort IDS logged {totals['snort_alerts']} signature match(es) in network traffic."
+            )
+
         attack_stages = report_data.get("attack_stages", {})
         stages = attack_stages.get("stages", [])
         if stages:
@@ -705,7 +772,8 @@ class RavenAIEngine:
                 lines.append(f"Recent alerts: {top_titles}.")
 
         lines.append(
-            "This summary is based on structured database evidence from SSH, FTP, web, Nmap, TShark, and alert records."
+            "This summary is based on structured database evidence from SSH, FTP, web, Nmap, TShark, "
+            "file integrity monitoring, Snort IDS, and alert records."
         )
 
         return " ".join(lines)

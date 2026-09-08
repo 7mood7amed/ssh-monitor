@@ -49,6 +49,10 @@ function Header({ lastUpdated }) {
             Network Events
           </NavLink>
 
+          <NavLink to="/snort" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
+            Snort IDS
+          </NavLink>
+
           <NavLink to="/fim" className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}>
             File Integrity
           </NavLink>
