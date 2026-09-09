@@ -29,6 +29,7 @@ from typing import Optional, List, Tuple, Dict
 
 import psycopg2
 from collections import Counter
+from urllib.parse import unquote
 
 def extract_first_ipv4(text: str) -> str | None:
     m = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text or "")
@@ -85,6 +86,31 @@ WEB_SENSITIVE_PATHS = (
 )
 
 WEB_SUSPICIOUS_METHODS = {"TRACE", "CONNECT", "PUT", "DELETE"}
+
+# SQL injection / XSS pattern rules, matched against the URL-decoded raw request-target.
+SQLI_PATTERNS = [
+    re.compile(r"union\s+(?:all\s+)?select", re.IGNORECASE),
+    re.compile(r"select\s+.+\s+from\s+", re.IGNORECASE),
+    re.compile(r"'\s*or\s*'?[^']*'?\s*=\s*'", re.IGNORECASE),
+    re.compile(r"\bor\b\s+\d+\s*=\s*\d+", re.IGNORECASE),
+    re.compile(r"\band\b\s+\d+\s*=\s*\d+", re.IGNORECASE),
+    re.compile(r"sleep\s*\(", re.IGNORECASE),
+    re.compile(r"benchmark\s*\(", re.IGNORECASE),
+    re.compile(r"information_schema", re.IGNORECASE),
+    re.compile(r"drop\s+table", re.IGNORECASE),
+    re.compile(r"xp_cmdshell", re.IGNORECASE),
+    re.compile(r"--(\s|$)|#\s*$", re.IGNORECASE),
+]
+
+XSS_PATTERNS = [
+    re.compile(r"<script", re.IGNORECASE),
+    re.compile(r"javascript:", re.IGNORECASE),
+    re.compile(r"on(?:error|load|click|focus)\s*=", re.IGNORECASE),
+    re.compile(r"<img[^>]+onerror", re.IGNORECASE),
+    re.compile(r"<iframe", re.IGNORECASE),
+    re.compile(r"document\.cookie", re.IGNORECASE),
+    re.compile(r"<svg[^>]+onload", re.IGNORECASE),
+]
 
 # -------------------------------
 # FIM (file integrity monitoring) tunables
@@ -241,8 +267,8 @@ def _new_evidence_after_last_event(last_seen: datetime, last_event_time: Optiona
     return last_seen > last_event_time
 
 
-def _within_cooldown(created_at: datetime) -> bool:
-    return created_at >= (datetime.utcnow() - timedelta(minutes=BRUTE_FORCE_COOLDOWN_MINUTES))
+def _within_cooldown(created_at: datetime, minutes: int = BRUTE_FORCE_COOLDOWN_MINUTES) -> bool:
+    return created_at >= (datetime.utcnow() - timedelta(minutes=minutes))
 
 
 # -------------------------------
@@ -680,6 +706,7 @@ class WebHit:
     path: str
     status: int
     ua: str
+    raw_url: str = ""  # full request-target, query string included (path strips it)
 
 
 def _normalize_path(url: str) -> str:
@@ -708,7 +735,7 @@ def parse_apache_access_line(line: str) -> Optional[WebHit]:
         status = 0
 
     path = _normalize_path(url)
-    return WebHit(ip=ip, method=method, path=path, status=status, ua=ua)
+    return WebHit(ip=ip, method=method, path=path, status=status, ua=ua, raw_url=url)
 
 
 def alert_exists_recently_web(cur, title: str, ip_address: str | None) -> bool:
@@ -907,6 +934,100 @@ def web_scan_rule(cur):
 
         for lid, _m, _p, _st in items:
             link_alert(cur, int(alert_id), "logs", int(lid))
+
+
+def _web_injection_group_rule(cur, *, ip: str, items: list, title: str, priority: str, kind: str):
+    """
+    Grouped/append dedup for one (title, ip) bucket of SQLi or XSS hits, following
+    the same cooldown/append pattern as brute_force_*_rule and snort_alert_rule --
+    a sustained attack keeps updating one alert instead of going silent after the
+    first hit once WEB_DEDUPE_MINUTES worth of cooldown is still active.
+    """
+    items = sorted(items, key=lambda t: t[2])  # by log_time
+    last_seen = items[-1][2]
+
+    latest = _get_latest_alert_for_key(cur, title=title, source="web", ip_address=ip, user_name="(n/a)")
+
+    if latest:
+        alert_id, status, created_at, last_event_time = latest
+
+        if not _new_evidence_after_last_event(last_seen, last_event_time):
+            return
+
+        if (status or "").lower() != "resolved" and _within_cooldown(created_at, WEB_DEDUPE_MINUTES):
+            _update_alert_last_event_time(cur, int(alert_id), last_seen)
+            _append_alert_description(
+                cur,
+                int(alert_id),
+                f"[grouped] New {kind} match(es): +{len(items)} (last_seen={last_seen})",
+            )
+            for lid, _u, _t in items:
+                link_alert(cur, int(alert_id), "logs", int(lid))
+            return
+
+    examples = [u[:200] for (_lid, u, _t) in items[:6]]
+    description = (
+        f"Requests matching {kind} patterns observed in web traffic. "
+        f"ip={ip}, hits={len(items)}, window={WEB_WINDOW_SECONDS}s, examples={examples}"
+    )
+
+    new_alert_id = create_alert(
+        cur,
+        priority=priority,
+        title=title,
+        description=description,
+        source="web",
+        user_name="(n/a)",
+        ip_address=ip,
+        last_event_time=last_seen,
+    )
+
+    for lid, _u, _t in items:
+        link_alert(cur, int(new_alert_id), "logs", int(lid))
+
+
+def web_injection_rule(cur):
+    cur.execute(
+        """
+        SELECT id, log_time, message
+        FROM logs
+        WHERE source LIKE %s
+          AND log_time >= (NOW() AT TIME ZONE 'UTC') - (%s || ' seconds')::interval
+        ORDER BY log_time DESC
+        LIMIT 5000
+        """,
+        ("/var/log/apache2/access.log%", WEB_WINDOW_SECONDS),
+    )
+    rows = cur.fetchall()
+
+    per_ip_sqli_hits: dict[str, list[tuple[int, str, datetime]]] = {}
+    per_ip_xss_hits: dict[str, list[tuple[int, str, datetime]]] = {}
+
+    for log_id, log_time, msg in rows:
+        hit = parse_apache_access_line(msg or "")
+        if not hit or not hit.raw_url:
+            continue
+
+        decoded = unquote(hit.raw_url)
+
+        if any(p.search(decoded) for p in SQLI_PATTERNS):
+            per_ip_sqli_hits.setdefault(hit.ip, []).append((int(log_id), hit.raw_url, log_time))
+        elif any(p.search(decoded) for p in XSS_PATTERNS):
+            per_ip_xss_hits.setdefault(hit.ip, []).append((int(log_id), hit.raw_url, log_time))
+
+    for ip, items in per_ip_sqli_hits.items():
+        _web_injection_group_rule(
+            cur, ip=ip, items=items,
+            title="Web: Possible SQL Injection Attempt",
+            priority="critical", kind="SQL injection",
+        )
+
+    for ip, items in per_ip_xss_hits.items():
+        _web_injection_group_rule(
+            cur, ip=ip, items=items,
+            title="Web: Possible XSS Attempt",
+            priority="high", kind="XSS",
+        )
 
 
 # -------------------------------
@@ -1279,6 +1400,7 @@ def main():
                 brute_force_ssh_rule(cur)
 
                 web_scan_rule(cur)
+                web_injection_rule(cur)
                 tshark_protocol_anomaly_rule(cur)
                 recon_campaign_rule(cur)
 

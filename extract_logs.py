@@ -20,6 +20,7 @@ from collections import defaultdict
 from functools import lru_cache
 
 import psycopg2
+from urllib.parse import unquote
 
 # ---------------------------
 # DB / runtime config
@@ -174,17 +175,42 @@ def severity_from_auth_msg(msg_norm: str) -> str:
 _SUSPICIOUS_UA = ("sqlmap", "nikto", "nmap", "masscan", "python-requests")
 _SUSPICIOUS_URL_NEEDLES = (
     "../", "%2e%2e", "%2f",                    # traversal
-    "union select", " or 1=1", "%27", "' or",   # sqli-ish
+    "union select", "%27", "' or",              # sqli-ish
+    "select ", "drop table", "information_schema", "xp_cmdshell",
+    "<script", "%3cscript", "javascript:",
+    "<iframe", "%3ciframe", "document.cookie", "<svg", "%3csvg",
     "/wp-login.php", "/wp-admin", "/phpmyadmin", "/phppgadmin",
+)
+
+# Spacing-agnostic versions of the sqli/xss-ish needles above, mirrored from
+# alerts_engine.py's SQLI_PATTERNS/XSS_PATTERNS so a raw or oddly-spaced
+# payload (e.g. "1'or'1'='1", "1' AND 1=1--", "onclick=alert(1)") isn't
+# silently dropped here before the alert rule ever sees it.
+_SUSPICIOUS_URL_PATTERNS = (
+    re.compile(r"'\s*or\s*'?[^']*'?\s*=\s*'", re.IGNORECASE),
+    re.compile(r"union\s+(?:all\s+)?select", re.IGNORECASE),
+    re.compile(r"select\s+.+\s+from", re.IGNORECASE),
+    re.compile(r"\band\b\s+\d+\s*=\s*\d+", re.IGNORECASE),
+    re.compile(r"\bor\b\s+\d+\s*=\s*\d+", re.IGNORECASE),
+    re.compile(r"--(\s|$)|#\s*$", re.IGNORECASE),
+    re.compile(r"sleep\s*\(", re.IGNORECASE),
+    re.compile(r"benchmark\s*\(", re.IGNORECASE),
+    re.compile(r"on(?:error|load|click|focus)\s*=", re.IGNORECASE),
 )
 
 def severity_from_apache_access(parsed: dict) -> str:
     url_l = (parsed.get("url") or "").lower()
+    url_decoded_l = unquote(url_l)
     ua_l = (parsed.get("ua") or "").lower()
     status = int(parsed.get("status") or 0)
 
-    # Clear exploit/probing signals
-    if any(n in url_l for n in _SUSPICIOUS_URL_NEEDLES) or any(u in ua_l for u in _SUSPICIOUS_UA):
+    # Clear exploit/probing signals (checked against both raw and decoded url
+    # so a mixed-encoding payload like "1'%20or%20'1'='1" is still caught)
+    if (
+        any(n in url_l for n in _SUSPICIOUS_URL_NEEDLES)
+        or any(p.search(url_l) or p.search(url_decoded_l) for p in _SUSPICIOUS_URL_PATTERNS)
+        or any(u in ua_l for u in _SUSPICIOUS_UA)
+    ):
         return SEV_HIGH
 
     # If it was kept due to suspicious status codes (auth errors, 404 probing, throttling, server errors)
@@ -513,17 +539,21 @@ def parse_apache_access(line: str) -> Optional[dict]:
 
 def should_store_apache_access(parsed: dict) -> bool:
     url_l = (parsed.get("url") or "").lower()
+    url_decoded_l = unquote(url_l)
     method = (parsed.get("method") or "").upper()
     status = int(parsed.get("status") or 0)
 
     keyword_hit = any(k in url_l for k in WEB_KEEP_KEYWORDS)
     status_hit = status in WEB_KEEP_STATUSES or (500 <= status <= 599)
+    suspicious_hit = any(n in url_l for n in _SUSPICIOUS_URL_NEEDLES) or any(
+        p.search(url_l) or p.search(url_decoded_l) for p in _SUSPICIOUS_URL_PATTERNS
+    )
 
     if WEB_KEEP_POST_ALWAYS and method == "POST":
         return True
 
-    # keep sensitive URLs always; keep suspicious status always
-    if keyword_hit or status_hit:
+    # keep sensitive URLs always; keep suspicious status always; keep sqli/xss-looking urls always
+    if keyword_hit or status_hit or suspicious_hit:
         return True
 
     # keep POST to sensitive urls even if status not suspicious
