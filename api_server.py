@@ -1902,7 +1902,8 @@ def list_alerts():
             cur.execute(
                 f"""
                 SELECT id, created_at, source, priority, title, description,
-                       user_name, ip_address, file_target, status
+                       user_name, ip_address, file_target, status,
+                       mitre_technique, mitre_tactic
                 FROM alerts
                 {where_sql}
                 ORDER BY created_at DESC
@@ -1925,7 +1926,8 @@ def get_alert(alert_id: int):
             cur.execute(
                 """
                 SELECT id, created_at, source, priority, title, description,
-                       user_name, ip_address, file_target, status
+                       user_name, ip_address, file_target, status,
+                       mitre_technique, mitre_tactic
                 FROM alerts
                 WHERE id = %s
             """,

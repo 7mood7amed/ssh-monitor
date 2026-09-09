@@ -44,6 +44,33 @@ function SourceBadge({ source }) {
   );
 }
 
+function mitreUrl(technique) {
+  const [base, sub] = technique.split(".");
+  return sub
+    ? `https://attack.mitre.org/techniques/${base}/${sub}/`
+    : `https://attack.mitre.org/techniques/${base}/`;
+}
+
+function MitreBadge({ technique, tactic }) {
+  if (!technique) return null;
+  return (
+    <a
+      href={mitreUrl(technique)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={tactic || technique}
+      onClick={e => e.stopPropagation()}
+      style={{
+        fontFamily: "monospace", fontSize: 11, color: "#c084fc",
+        background: "rgba(192,132,252,0.08)", border: "1px solid rgba(192,132,252,0.25)",
+        borderRadius: 4, padding: "1px 6px", cursor: "pointer", textDecoration: "none",
+      }}
+    >
+      {technique}
+    </a>
+  );
+}
+
 // ── Critical banner ───────────────────────────────────────────────────────────
 
 function CriticalBanner({ alerts }) {
@@ -126,6 +153,7 @@ function AlertCard({ alert, selected, onSelect, onAction }) {
           </div>
           <div style={{ display: "flex", gap: 10, marginTop: 3, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(226,232,240,0.40)" }}>{ts}</span>
+            <MitreBadge technique={alert.mitre_technique} tactic={alert.mitre_tactic} />
             {alert.ip_address && (
               <span style={{
                 fontFamily: "monospace", fontSize: 11, color: "#00d4ff",
@@ -202,6 +230,7 @@ function InvestigationPanel({ alertId }) {
           <PriorityBadge priority={a.priority} />
           <StatusBadge status={a.status} />
           <SourceBadge source={a.source} />
+          <MitreBadge technique={a.mitre_technique} tactic={a.mitre_tactic} />
         </div>
         {a.ip_address && (
           <div style={{ fontFamily: "monospace", fontSize: 12, color: "#00d4ff", marginBottom: 6 }}>

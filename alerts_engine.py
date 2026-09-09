@@ -147,6 +147,53 @@ def _connect():
     return psycopg2.connect(**DB_CONFIG)
 
 
+# -------------------------------
+# MITRE ATT&CK technique tagging
+# -------------------------------
+# Keyed by exact alert title (or a "TitlePrefix:" prefix for dynamic titles).
+# Values are (technique_id, technique_name).
+TITLE_TO_MITRE: dict[str, tuple[str, str]] = {
+    "FTP Brute Force Suspected": ("T1110", "Brute Force"),
+    "SSH Brute Force Suspected": ("T1110", "Brute Force"),
+    "Mass Deletion Activity": ("T1485", "Data Destruction"),
+    "Directory Removal Detected": ("T1485", "Data Destruction"),
+    "Nmap: New Port Detected": ("T1046", "Network Service Discovery"),
+    "Web: Sensitive Path Probing": ("T1595", "Active Scanning"),
+    "Web: Burst Scan Suspected": ("T1595", "Active Scanning"),
+    "Web: Suspicious HTTP Method": ("T1190", "Exploit Public-Facing Application"),
+    "Web: Possible SQL Injection Attempt": ("T1190", "Exploit Public-Facing Application"),
+    "Web: Possible XSS Attempt": ("T1190", "Exploit Public-Facing Application"),
+    "TShark: Possible ICMP Sweep": ("T1595", "Active Scanning"),
+    "TShark: Possible DNS Beaconing": ("T1071.004", "Application Layer Protocol: DNS"),
+    "TShark: Suspicious HTTP Path Probing": ("T1595", "Active Scanning"),
+    "Reconnaissance Campaign Detected": ("T1595", "Active Scanning"),
+    "FIM: New File in Webroot (Possible Web Shell)": ("T1505.003", "Server Software Component: Web Shell"),
+}
+
+# Prefix fallbacks for titles that carry dynamic text (checked in order, first match wins).
+TITLE_PREFIX_TO_MITRE: list[tuple[str, tuple[str, str]]] = [
+    ("FIM:", ("T1565", "Data Manipulation")),
+]
+
+# Snort alerts key off `classification` (small, stable set) rather than the
+# free-text `message` field (one string per signature, effectively unbounded).
+SNORT_CLASSIFICATION_TO_MITRE: dict[str, tuple[str, str]] = {
+    "Web Application Attack": ("T1190", "Exploit Public-Facing Application"),
+    "Detection of a Network Scan": ("T1595", "Active Scanning"),
+    "Network Scan Detected": ("T1595", "Active Scanning"),
+}
+
+
+def _lookup_mitre_by_title(title: str) -> tuple[str | None, str | None]:
+    hit = TITLE_TO_MITRE.get(title)
+    if hit:
+        return hit
+    for prefix, mapping in TITLE_PREFIX_TO_MITRE:
+        if title.startswith(prefix):
+            return mapping
+    return (None, None)
+
+
 def create_alert(
     cur,
     priority: str,
@@ -158,18 +205,25 @@ def create_alert(
     ip_address: str | None = None,
     file_target: str | None = None,
     last_event_time: datetime | None = None,
+    mitre_technique: str | None = None,
+    mitre_tactic: str | None = None,
 ) -> int:
     """
     Insert into alerts table and return alert_id.
     NOW includes last_event_time (used for dedupe/append logic).
+    mitre_technique/mitre_tactic are auto-derived from `title` via
+    TITLE_TO_MITRE/TITLE_PREFIX_TO_MITRE when not explicitly passed.
     """
+    if mitre_technique is None and mitre_tactic is None:
+        mitre_technique, mitre_tactic = _lookup_mitre_by_title(title)
+
     cur.execute(
         """
-        INSERT INTO alerts (source, priority, title, description, user_name, ip_address, file_target, last_event_time)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO alerts (source, priority, title, description, user_name, ip_address, file_target, last_event_time, mitre_technique, mitre_tactic)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (source, priority, title, description, user_name, ip_address, file_target, last_event_time),
+        (source, priority, title, description, user_name, ip_address, file_target, last_event_time, mitre_technique, mitre_tactic),
     )
     return cur.fetchone()[0]
 
@@ -1345,6 +1399,7 @@ def snort_alert_rule(cur):
         source = "snort"
         priority_label = SNORT_PRIORITY_TO_PRIORITY.get(priority, "medium")
         user_key = "(n/a)"  # Snort alerts have no username concept; constant so the grouped-lookup exact-match works
+        mitre_technique, mitre_tactic = SNORT_CLASSIFICATION_TO_MITRE.get(classification, (None, None))
 
         latest = _get_latest_alert_for_key(cur, title=title, source=source, ip_address=ip_key, user_name=user_key)
 
@@ -1381,6 +1436,8 @@ def snort_alert_rule(cur):
             ip_address=src_ip,
             file_target=f"{dst_ip}:{dst_port}" if dst_ip else None,
             last_event_time=last_seen,
+            mitre_technique=mitre_technique,
+            mitre_tactic=mitre_tactic,
         )
 
         for aid in alert_ids:

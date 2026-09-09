@@ -338,7 +338,8 @@ class RavenAIEngine:
 
                 cur.execute("""
                     SELECT id, created_at, source, priority, title,
-                           description, user_name, ip_address, file_target, status
+                           description, user_name, ip_address, file_target, status,
+                           mitre_technique, mitre_tactic
                     FROM public.alerts
                     WHERE created_at >= NOW() - (%s || ' hours')::interval
                     ORDER BY created_at DESC LIMIT 100;
