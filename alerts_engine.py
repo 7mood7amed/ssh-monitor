@@ -130,6 +130,15 @@ FIM_SENSITIVE_FILES = {
 # Directories treated as web-facing (new file here = possible web shell)
 FIM_WEBROOT_PREFIXES = ("/var/www/html",)
 
+# Web shell activation correlation: how long a webroot file drop stays a "candidate"
+# waiting for a matching HTTP hit, and how far back to keep looking for drops at all.
+WEBSHELL_LOOKBACK_MINUTES = int(os.environ.get("WEBSHELL_LOOKBACK_MINUTES", "120"))
+WEBSHELL_ACTIVATION_WINDOW_MINUTES = int(os.environ.get("WEBSHELL_ACTIVATION_WINDOW_MINUTES", "60"))
+# Monitored host's own IP, for the optional packet_events anomaly enrichment below.
+# Empty = skip that check (packet_events only stores pre-filtered scan/sweep/beacon
+# anomalies, not a full connection log, so this is a bonus signal, never required).
+MONITORED_HOST_IP = os.environ.get("MONITORED_HOST_IP", "")
+
 # -------------------------------
 # Snort tunables
 # -------------------------------
@@ -1357,6 +1366,154 @@ def fim_events_rule(cur):
             )
 
 
+WEBSHELL_ACTIVATION_TITLE = "Possible Web Shell Activation"
+
+
+def webshell_activation_alert_exists(cur, event_id: int) -> bool:
+    """
+    Like fim_alert_exists_for_event, but scoped to THIS rule's own title --
+    reusing fim_alert_exists_for_event as-is would be wrong, since it already
+    returns True for every webroot-drop event (fim_events_rule always links
+    its own base alert to the same fim_events row first).
+    """
+    cur.execute(
+        """
+        SELECT 1
+        FROM alert_log_links allk
+        JOIN alerts a ON a.id = allk.alert_id
+        WHERE allk.log_type = 'fim_events'
+          AND allk.log_id = %s
+          AND a.title = %s
+        LIMIT 1
+        """,
+        (event_id, WEBSHELL_ACTIVATION_TITLE),
+    )
+    return cur.fetchone() is not None
+
+
+def webshell_activation_rule(cur):
+    """
+    Rule: web shell activation correlation.
+
+    fim_events_rule fires the instant a new file lands under the web root --
+    useful, but with no signal about whether it was ever actually used. This
+    rule correlates that drop with a subsequent HTTP hit on the exact same
+    path, the real two-stage signature of a web shell (drop, then invoke)
+    rather than an incidental upload. A separate, higher-confidence CRITICAL
+    alert, distinct from fim_events_rule's own drop-only alert.
+
+    Deliberately does NOT require a subsequent outbound-connection anomaly --
+    packet_events only stores pre-filtered scan/sweep/beacon anomalies, not a
+    full connection log, so a one-off C2 callback wouldn't be captured there.
+    If MONITORED_HOST_IP is set and a packet_events anomaly happens to be
+    present nearby, it's appended as a bonus correlation note -- never
+    required for this alert to fire.
+    """
+    cur.execute(
+        """
+        SELECT id, file_path, detected_at
+        FROM public.fim_events
+        WHERE event_type = 'added'
+          AND detected_at >= NOW() - (%s || ' minutes')::interval
+        ORDER BY detected_at
+        """,
+        (WEBSHELL_LOOKBACK_MINUTES,),
+    )
+    candidates = [
+        (eid, path, detected_at)
+        for eid, path, detected_at in cur.fetchall()
+        if path.startswith(FIM_WEBROOT_PREFIXES)
+    ]
+
+    for eid, file_path, detected_at in candidates:
+        if webshell_activation_alert_exists(cur, eid):
+            continue
+
+        url_path = None
+        for prefix in FIM_WEBROOT_PREFIXES:
+            if file_path.startswith(prefix):
+                url_path = file_path[len(prefix):] or "/"
+                if not url_path.startswith("/"):
+                    url_path = "/" + url_path
+                break
+        if not url_path:
+            continue
+
+        cur.execute(
+            """
+            SELECT id, log_time, message
+            FROM logs
+            WHERE source LIKE %s
+              AND log_time > %s
+              AND log_time <= %s + (%s || ' minutes')::interval
+            ORDER BY log_time
+            """,
+            (
+                "/var/log/apache2/access.log%",
+                detected_at,
+                detected_at,
+                WEBSHELL_ACTIVATION_WINDOW_MINUTES,
+            ),
+        )
+
+        hits = []
+        for log_id, log_time, msg in cur.fetchall():
+            hit = parse_apache_access_line(msg or "")
+            if hit and hit.path == url_path:
+                hits.append((int(log_id), log_time, hit))
+
+        if not hits:
+            continue  # still just a candidate; a later run may find the activation
+
+        first_log_id, first_hit_time, first_hit = hits[0]
+
+        description = (
+            f"File dropped under the web root was subsequently requested over HTTP -- "
+            f"the two-stage signature of a web shell being used, not just uploaded. "
+            f"file={file_path}, url_path={url_path}, dropped_at={detected_at}, "
+            f"first_hit_at={first_hit_time}, requester_ip={first_hit.ip}, hits={len(hits)}"
+        )
+
+        alert_id = create_alert(
+            cur,
+            priority="critical",
+            title=WEBSHELL_ACTIVATION_TITLE,
+            description=description,
+            source="fim",
+            ip_address=first_hit.ip,
+            file_target=file_path,
+            last_event_time=first_hit_time,
+        )
+
+        link_alert(cur, int(alert_id), "fim_events", int(eid))
+        for log_id, _t, _h in hits:
+            link_alert(cur, int(alert_id), "logs", int(log_id))
+
+        if MONITORED_HOST_IP:
+            cur.execute(
+                """
+                SELECT anomaly, dst_ip, dst_port, captured_at
+                FROM packet_events
+                WHERE src_ip = %s
+                  AND anomaly IS NOT NULL
+                  AND captured_at >= %s
+                  AND captured_at <= %s + interval '10 minutes'
+                ORDER BY captured_at
+                LIMIT 1
+                """,
+                (MONITORED_HOST_IP, first_hit_time, first_hit_time),
+            )
+            anomaly_row = cur.fetchone()
+            if anomaly_row:
+                anomaly, dst_ip, dst_port, captured_at = anomaly_row
+                _append_alert_description(
+                    cur,
+                    int(alert_id),
+                    f"[correlation] Possible outbound C2 signal shortly after activation: "
+                    f"{anomaly} to {dst_ip}:{dst_port} at {captured_at}",
+                )
+
+
 def snort_alert_rule(cur):
     """
     Rule 11: Snort IDS alerts (exploit signatures / payload-content detection --
@@ -1465,6 +1622,7 @@ def main():
                 critical_rmdir_rule(cur)
                 nmap_new_port_rule(cur)
                 fim_events_rule(cur)
+                webshell_activation_rule(cur)
                 snort_alert_rule(cur)
 
         print("Alerts engine executed successfully")

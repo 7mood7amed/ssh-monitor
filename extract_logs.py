@@ -76,6 +76,14 @@ WEB_KEEP_STATUSES = set(
 WEB_KEEP_POST_ALWAYS = os.environ.get("WEB_KEEP_POST_ALWAYS", "0").strip() != "0"
 MAX_UA_LEN = int(os.environ.get("MAX_UA_LEN", "240"))
 
+# Web shell activation correlation support: a hit on a file recently dropped
+# under a watched web-root dir must be kept even though it looks like an
+# ordinary 200 request, otherwise alerts_engine.py's webshell_activation_rule
+# never sees it (should_store_apache_access otherwise only keeps "suspicious"
+# traffic). Matches fim_monitor.py's FIM_WATCH_DIRS default.
+FIM_WATCH_DIRS = os.environ.get("FIM_WATCH_DIRS", "/var/www/html")
+WEBSHELL_CANDIDATE_LOOKBACK_MINUTES = int(os.environ.get("WEBSHELL_CANDIDATE_LOOKBACK_MINUTES", "120"))
+
 # ---------------------------
 # FTP brute-force tracker (in-memory per run)
 # ---------------------------
@@ -537,9 +545,46 @@ def parse_apache_access(line: str) -> Optional[dict]:
         "raw": raw,
     }
 
-def should_store_apache_access(parsed: dict) -> bool:
+def get_webshell_candidate_paths(conn) -> frozenset:
+    """
+    URL paths (lowercased) of files recently dropped under a watched web-root
+    dir, per fim_events -- so should_store_apache_access can unconditionally
+    keep a matching HTTP hit even though it looks like an ordinary request.
+    """
+    prefixes = tuple(p.strip() for p in FIM_WATCH_DIRS.split(",") if p.strip())
+    if not prefixes:
+        return frozenset()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT file_path FROM fim_events
+                WHERE event_type = 'added'
+                  AND detected_at >= NOW() - (%s || ' minutes')::interval
+                """,
+                (WEBSHELL_CANDIDATE_LOOKBACK_MINUTES,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return frozenset()
+
+    paths = set()
+    for (file_path,) in rows:
+        for prefix in prefixes:
+            if file_path.startswith(prefix):
+                url_path = file_path[len(prefix):] or "/"
+                if not url_path.startswith("/"):
+                    url_path = "/" + url_path
+                paths.add(url_path.lower())
+                break
+    return frozenset(paths)
+
+
+def should_store_apache_access(parsed: dict, webshell_candidate_paths: frozenset = frozenset()) -> bool:
     url_l = (parsed.get("url") or "").lower()
     url_decoded_l = unquote(url_l)
+    path_only_l = url_l.split("?", 1)[0]
     method = (parsed.get("method") or "").upper()
     status = int(parsed.get("status") or 0)
 
@@ -548,12 +593,14 @@ def should_store_apache_access(parsed: dict) -> bool:
     suspicious_hit = any(n in url_l for n in _SUSPICIOUS_URL_NEEDLES) or any(
         p.search(url_l) or p.search(url_decoded_l) for p in _SUSPICIOUS_URL_PATTERNS
     )
+    webshell_hit = path_only_l in webshell_candidate_paths
 
     if WEB_KEEP_POST_ALWAYS and method == "POST":
         return True
 
-    # keep sensitive URLs always; keep suspicious status always; keep sqli/xss-looking urls always
-    if keyword_hit or status_hit or suspicious_hit:
+    # keep sensitive URLs always; keep suspicious status always; keep sqli/xss-looking
+    # urls always; keep hits on recently-dropped webroot files always
+    if keyword_hit or status_hit or suspicious_hit or webshell_hit:
         return True
 
     # keep POST to sensitive urls even if status not suspicious
@@ -804,6 +851,10 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
     base = os.path.basename(path)
     upsert_agent_heartbeat(conn, agent_for_path(path))  # heartbeat even if no new lines are inserted
 
+    webshell_candidate_paths = (
+        get_webshell_candidate_paths(conn) if base.startswith(ACCESS_PREFIX) else frozenset()
+    )
+
     try:
         with open(path, "r", errors="ignore") as f:
             f.seek(start)
@@ -835,7 +886,7 @@ def ingest_file(conn, path: str) -> Tuple[int, int]:
                     if not parsed:
                         dropped += 1
                         continue
-                    if not should_store_apache_access(parsed):
+                    if not should_store_apache_access(parsed, webshell_candidate_paths):
                         dropped += 1
                         continue
 
