@@ -4,6 +4,29 @@ import "../components/FtpLogs.css";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// Handles both shapes: created_at arrives GMT-labeled already (parses correctly
+// as-is), evidence "time" values arrive as a genuinely-UTC value with no
+// timezone marker (mark it as UTC before converting). Either way, display in
+// real Bahrain time.
+function fmtTs(d) {
+  if (!d) return "—";
+  let iso = d;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(d)) {
+    iso = d.replace(" ", "T") + "Z";
+  }
+  return new Date(iso).toLocaleString("en-GB", {
+    timeZone: "Asia/Bahrain",
+    day: "2-digit", month: "2-digit", year: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+// The backend (get_alert()'s add_item()) now normalizes every evidence
+// item's "time" onto a consistent true-UTC basis before sending it here --
+// including ssh_events/ftp_events/nmap_findings, which store already-local
+// time at the source and previously needed special-casing here. One uniform
+// conversion is correct for every evidence type now.
+
 function PriorityBadge({ priority }) {
   const p = (priority || "").toLowerCase();
   return (
@@ -22,7 +45,7 @@ function StatusBadge({ status }) {
   );
 }
 
-function SourceBadge({ source }) {
+function SourceBadge({ source, involvedAgents }) {
   const colors = {
     ssh: { color: "#a855f7", bg: "rgba(168,85,247,0.09)", border: "rgba(168,85,247,0.28)" },
     ftp: { color: "#00d4ff", bg: "rgba(0,212,255,0.09)", border: "rgba(0,212,255,0.28)" },
@@ -32,6 +55,10 @@ function SourceBadge({ source }) {
     correlation: { color: "#f59e0b", bg: "rgba(245,158,11,0.09)", border: "rgba(245,158,11,0.26)" },
   };
   const c = colors[(source || "").toLowerCase()] || { color: "#94a3b8", bg: "rgba(148,163,184,0.07)", border: "rgba(148,163,184,0.20)" };
+  const isCorrelation = (source || "").toLowerCase() === "correlation";
+  const label = isCorrelation && Array.isArray(involvedAgents) && involvedAgents.length > 0
+    ? involvedAgents.join(" + ")
+    : (source || "—");
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", height: 20,
@@ -39,7 +66,7 @@ function SourceBadge({ source }) {
       textTransform: "uppercase", letterSpacing: "0.05em",
       color: c.color, background: c.bg, border: `1px solid ${c.border}`,
     }}>
-      {source || "—"}
+      {label}
     </span>
   );
 }
@@ -71,6 +98,22 @@ function MitreBadge({ technique, tactic }) {
   );
 }
 
+function CorrelationBadge({ correlated }) {
+  if (!correlated) return null;
+  return (
+    <span
+      title="Evidence spans more than one source"
+      style={{
+        fontSize: 11, color: "#38bdf8",
+        background: "rgba(56,189,248,0.08)", border: "1px solid rgba(56,189,248,0.25)",
+        borderRadius: 4, padding: "1px 6px", cursor: "help",
+      }}
+    >
+      🔗 Correlated
+    </span>
+  );
+}
+
 // ── Critical banner ───────────────────────────────────────────────────────────
 
 function CriticalBanner({ alerts }) {
@@ -92,7 +135,7 @@ function CriticalBanner({ alerts }) {
       </div>
       {alerts.slice(0, 3).map(a => (
         <div key={a.id} style={{ fontSize: 12, color: "rgba(226,232,240,0.80)", display: "flex", gap: 8, marginTop: 3 }}>
-          <SourceBadge source={a.source} />
+          <SourceBadge source={a.source} involvedAgents={a.involved_agents} />
           <span style={{ fontWeight: 600 }}>{a.title}</span>
           {a.ip_address && (
             <span style={{ fontFamily: "monospace", color: "#00d4ff", fontSize: 11 }}>{a.ip_address}</span>
@@ -127,12 +170,7 @@ function AlertCard({ alert, selected, onSelect, onAction }) {
     marginBottom: 6,
   };
 
-  const ts = alert.created_at
-    ? new Date(alert.created_at).toLocaleString("en-GB", {
-      day: "2-digit", month: "2-digit", year: "2-digit",
-      hour: "2-digit", minute: "2-digit",
-    })
-    : "—";
+  const ts = fmtTs(alert.created_at);
 
   return (
     <div style={cardStyle} onClick={() => onSelect(alert.id)}>
@@ -142,7 +180,7 @@ function AlertCard({ alert, selected, onSelect, onAction }) {
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
           <PriorityBadge priority={alert.priority} />
           <StatusBadge status={alert.status} />
-          <SourceBadge source={alert.source} />
+          <SourceBadge source={alert.source} involvedAgents={alert.involved_agents} />
         </div>
 
         {/* Centre: title + meta */}
@@ -154,6 +192,7 @@ function AlertCard({ alert, selected, onSelect, onAction }) {
           <div style={{ display: "flex", gap: 10, marginTop: 3, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontFamily: "monospace", fontSize: 11, color: "rgba(226,232,240,0.40)" }}>{ts}</span>
             <MitreBadge technique={alert.mitre_technique} tactic={alert.mitre_tactic} />
+            <CorrelationBadge correlated={alert.correlated} />
             {alert.ip_address && (
               <span style={{
                 fontFamily: "monospace", fontSize: 11, color: "#00d4ff",
@@ -229,8 +268,9 @@ function InvestigationPanel({ alertId }) {
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
           <PriorityBadge priority={a.priority} />
           <StatusBadge status={a.status} />
-          <SourceBadge source={a.source} />
+          <SourceBadge source={a.source} involvedAgents={a.involved_agents} />
           <MitreBadge technique={a.mitre_technique} tactic={a.mitre_tactic} />
+          <CorrelationBadge correlated={a.correlated} />
         </div>
         {a.ip_address && (
           <div style={{ fontFamily: "monospace", fontSize: 12, color: "#00d4ff", marginBottom: 6 }}>
@@ -255,7 +295,7 @@ function InvestigationPanel({ alertId }) {
           <div key={i} className="inv-evidence-item">
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
               <span className="inv-evidence-type">{it.log_type}</span>
-              <span className="inv-evidence-ts">{it.time}</span>
+              <span className="inv-evidence-ts">{fmtTs(it.time)}</span>
             </div>
             <div className="inv-evidence-msg">{it.message}</div>
           </div>

@@ -1,7 +1,24 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
-import "./FtpLogs.css"; 
+import "./FtpLogs.css";
+
+// last_heartbeat comes from the backend as a genuinely-UTC value with no
+// timezone marker (Postgres NOW(), same write path for every agent regardless
+// of that agent's own event-data convention) -- mark it as UTC before
+// converting so it displays real Bahrain time.
+function fmtTs(d) {
+  if (!d) return "—";
+  let iso = d;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(d)) {
+    iso = d.replace(" ", "T") + "Z";
+  }
+  return new Date(iso).toLocaleString("en-GB", {
+    timeZone: "Asia/Bahrain",
+    day: "2-digit", month: "2-digit", year: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
 
 function normalizeStatus(value) {
   const s = String(value || "").trim().toLowerCase();
@@ -132,7 +149,7 @@ export default function AgentStatus() {
                   <tr key={agent.agent_name}>
                     <td title={agent.agent_name || ""}>{agent.agent_name || ""}</td>
                     <td className="mono" title={agent.last_heartbeat || ""}>
-                      {agent.last_heartbeat || "—"}
+                      {fmtTs(agent.last_heartbeat)}
                     </td>
                     <td title={agent.status || ""}>
                       <StatusBadge status={agent.status} />

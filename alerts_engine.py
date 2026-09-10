@@ -139,6 +139,16 @@ WEBSHELL_ACTIVATION_WINDOW_MINUTES = int(os.environ.get("WEBSHELL_ACTIVATION_WIN
 # anomalies, not a full connection log, so this is a bonus signal, never required).
 MONITORED_HOST_IP = os.environ.get("MONITORED_HOST_IP", "")
 
+# Correlation: brute-force success -> subsequent file change. Any FIM event
+# type qualifies here (unlike the webshell rule, not just webroot adds) --
+# the point is "did the attacker who was hammering the door get in and touch
+# anything," not specifically web shells.
+POST_BRUTE_FORCE_FIM_LOOKBACK_MINUTES = int(os.environ.get("POST_BRUTE_FORCE_FIM_LOOKBACK_MINUTES", "60"))
+POST_BRUTE_FORCE_FIM_WINDOW_MINUTES = int(os.environ.get("POST_BRUTE_FORCE_FIM_WINDOW_MINUTES", "30"))
+POST_BRUTE_FORCE_FIM_DEDUPE_MINUTES = int(os.environ.get("POST_BRUTE_FORCE_FIM_DEDUPE_MINUTES", "30"))
+BRUTE_FORCE_ALERT_TITLES = ("SSH Brute Force Suspected", "FTP Brute Force Suspected")
+POST_BRUTE_FORCE_FIM_TITLE = "Possible Compromise After Brute Force"
+
 # -------------------------------
 # Snort tunables
 # -------------------------------
@@ -176,7 +186,7 @@ TITLE_TO_MITRE: dict[str, tuple[str, str]] = {
     "TShark: Possible DNS Beaconing": ("T1071.004", "Application Layer Protocol: DNS"),
     "TShark: Suspicious HTTP Path Probing": ("T1595", "Active Scanning"),
     "Reconnaissance Campaign Detected": ("T1595", "Active Scanning"),
-    "FIM: New File in Webroot (Possible Web Shell)": ("T1505.003", "Server Software Component: Web Shell"),
+    "Possible Web Shell Activation": ("T1505.003", "Server Software Component: Web Shell"),
 }
 
 # Prefix fallbacks for titles that carry dynamic text (checked in order, first match wins).
@@ -1319,7 +1329,7 @@ def fim_events_rule(cur):
             title = f"FIM: Critical System File {etype.replace('_', ' ').title()}"
         elif etype == "added" and path.startswith(FIM_WEBROOT_PREFIXES):
             priority = "high"
-            title = "FIM: New File in Webroot (Possible Web Shell)"
+            title = "FIM: New File in Webroot"
         else:
             priority = "high"
             title = f"FIM: {etype.replace('_', ' ').title()}"
@@ -1479,7 +1489,7 @@ def webshell_activation_rule(cur):
             priority="critical",
             title=WEBSHELL_ACTIVATION_TITLE,
             description=description,
-            source="fim",
+            source="correlation",
             ip_address=first_hit.ip,
             file_target=file_path,
             last_event_time=first_hit_time,
@@ -1512,6 +1522,141 @@ def webshell_activation_rule(cur):
                     f"[correlation] Possible outbound C2 signal shortly after activation: "
                     f"{anomaly} to {dst_ip}:{dst_port} at {captured_at}",
                 )
+
+
+def post_brute_force_alert_exists_for_event(cur, event_id: int) -> bool:
+    """
+    Same shape as webshell_activation_alert_exists -- scoped to THIS rule's
+    own title, so a given fim_events row is only ever considered once.
+    """
+    cur.execute(
+        """
+        SELECT 1
+        FROM alert_log_links allk
+        JOIN alerts a ON a.id = allk.alert_id
+        WHERE allk.log_type = 'fim_events'
+          AND allk.log_id = %s
+          AND a.title = %s
+        LIMIT 1
+        """,
+        (event_id, POST_BRUTE_FORCE_FIM_TITLE),
+    )
+    return cur.fetchone() is not None
+
+
+def _copy_alert_evidence(cur, from_alert_id: int, to_alert_id: int):
+    """
+    Re-links an existing alert's evidence rows onto another alert. Used
+    instead of inventing alert-to-alert linking infrastructure -- the
+    brute-force alert's own ssh_events/logs evidence gets attached directly
+    to the correlation alert too, so the Investigation panel shows both the
+    login attempts and the file change together, not just one with a text
+    reference to the other.
+    """
+    cur.execute(
+        "SELECT log_type, log_id FROM alert_log_links WHERE alert_id = %s",
+        (from_alert_id,),
+    )
+    for log_type, log_id in cur.fetchall():
+        link_alert(cur, to_alert_id, log_type, log_id)
+
+
+def post_brute_force_fim_rule(cur):
+    """
+    Correlation: brute-force success -> subsequent file change.
+
+    A brute-force alert alone only proves someone was hammering the door --
+    it says nothing about whether they got in. A file-system change shortly
+    after is the real "did this attacker actually succeed" signal.
+
+    Same known limitation as webshell_activation_rule: fim_events has no IP
+    column (file-scoped, not IP-scoped), so this can only correlate
+    temporally (brute-force alert, then any FIM event within a window), not
+    by matching the same source IP against the file change.
+
+    Grouped/append pattern, same as snort_alert_rule/web_injection_rule: one
+    growing critical alert per (title, ip), not one alert per file change.
+    """
+    cur.execute(
+        """
+        SELECT id, file_path, event_type, detected_at
+        FROM public.fim_events
+        WHERE detected_at >= NOW() - (%s || ' minutes')::interval
+        ORDER BY detected_at
+        """,
+        (POST_BRUTE_FORCE_FIM_LOOKBACK_MINUTES,),
+    )
+    fim_rows = cur.fetchall()
+
+    for eid, file_path, event_type, detected_at in fim_rows:
+        if post_brute_force_alert_exists_for_event(cur, eid):
+            continue
+
+        cur.execute(
+            """
+            SELECT id, ip_address, created_at
+            FROM alerts
+            WHERE title = ANY(%s)
+              AND created_at <= %s
+              AND created_at >= %s - (%s || ' minutes')::interval
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (
+                list(BRUTE_FORCE_ALERT_TITLES),
+                detected_at,
+                detected_at,
+                POST_BRUTE_FORCE_FIM_WINDOW_MINUTES,
+            ),
+        )
+        prior = cur.fetchone()
+        if not prior:
+            continue
+
+        bf_alert_id, bf_ip, bf_created_at = prior
+        if not bf_ip:
+            continue
+
+        latest = _get_latest_alert_for_key(
+            cur, title=POST_BRUTE_FORCE_FIM_TITLE, source="correlation", ip_address=bf_ip, user_name="(n/a)"
+        )
+
+        if latest:
+            alert_id, status, created_at, _last_event_time = latest
+            if (status or "").lower() != "resolved" and _within_cooldown(
+                created_at, POST_BRUTE_FORCE_FIM_DEDUPE_MINUTES
+            ):
+                _update_alert_last_event_time(cur, int(alert_id), detected_at)
+                _append_alert_description(
+                    cur,
+                    int(alert_id),
+                    f"[grouped] Additional file change after brute force: "
+                    f"file={file_path}, type={event_type}, at={detected_at}",
+                )
+                link_alert(cur, int(alert_id), "fim_events", int(eid))
+                _copy_alert_evidence(cur, int(bf_alert_id), int(alert_id))
+                continue
+
+        description = (
+            f"File system change followed a recent brute-force campaign -- a possible sign the "
+            f"attacker actually got in, not just attempted to. brute_force_alert_id={bf_alert_id}, "
+            f"ip={bf_ip}, brute_force_started={bf_created_at}, file={file_path}, "
+            f"change_type={event_type}, detected_at={detected_at}"
+        )
+
+        alert_id = create_alert(
+            cur,
+            priority="critical",
+            title=POST_BRUTE_FORCE_FIM_TITLE,
+            description=description,
+            source="correlation",
+            user_name="(n/a)",
+            ip_address=bf_ip,
+            file_target=file_path,
+            last_event_time=detected_at,
+        )
+        link_alert(cur, int(alert_id), "fim_events", int(eid))
+        _copy_alert_evidence(cur, int(bf_alert_id), int(alert_id))
 
 
 def snort_alert_rule(cur):
@@ -1623,6 +1768,7 @@ def main():
                 nmap_new_port_rule(cur)
                 fim_events_rule(cur)
                 webshell_activation_rule(cur)
+                post_brute_force_fim_rule(cur)
                 snort_alert_rule(cur)
 
         print("Alerts engine executed successfully")

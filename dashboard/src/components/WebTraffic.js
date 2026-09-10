@@ -2,6 +2,22 @@ import React, { useEffect, useMemo, useState } from "react";
 import API_BASE_URL from "../config";
 import "./FtpLogs.css";
 
+// log_time comes from the backend as a genuinely-UTC value with no timezone
+// marker (Apache's own log line is converted to true UTC before storage) --
+// mark it as UTC before converting so it displays real Bahrain time.
+function fmtTs(d) {
+  if (!d) return "—";
+  let iso = d;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(d)) {
+    iso = d.replace(" ", "T") + "Z";
+  }
+  return new Date(iso).toLocaleString("en-GB", {
+    timeZone: "Asia/Bahrain",
+    day: "2-digit", month: "2-digit", year: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
 function normalizeSeverity(value) {
   const s = String(value || "").trim().toLowerCase();
   if (["low", "medium", "high", "critical"].includes(s)) return s;
@@ -176,7 +192,7 @@ const WebTraffic = () => {
                     <React.Fragment key={key}>
                       <tr className={sev === "high" || sev === "critical" ? "row-high" : ""}>
                         <td className="mono" style={{ fontSize: 11, color: "rgba(226,232,240,0.55)" }}>
-                          {log.timestamp}
+                          {fmtTs(log.timestamp)}
                         </td>
                         <td>
                           <span style={{

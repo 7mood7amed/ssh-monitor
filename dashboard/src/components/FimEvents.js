@@ -7,6 +7,22 @@ const EVENT_TYPES = ["modified", "added", "deleted", "permission_changed"];
 const LIMIT_OPTIONS = [20, 50, 100];
 const FETCH_LIMIT = 7000;
 
+// detected_at comes from the backend as a genuinely-UTC value with no timezone
+// marker (e.g. "2026-09-09 19:25:37") -- mark it as UTC before converting so
+// it displays real Bahrain time instead of the raw UTC number.
+function fmtTs(d) {
+  if (!d) return "—";
+  let iso = d;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(d)) {
+    iso = d.replace(" ", "T") + "Z";
+  }
+  return new Date(iso).toLocaleString("en-GB", {
+    timeZone: "Asia/Bahrain",
+    day: "2-digit", month: "2-digit", year: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
 function normalizeSev(v) {
   const s = String(v || "").trim().toUpperCase();
   return ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(s) ? s : "";
@@ -179,7 +195,7 @@ export default function FimEvents({ refreshTrigger }) {
                     className={r.severity === "HIGH" || r.severity === "CRITICAL" ? "row-high" : ""}
                     style={{ height: 44 }}>
                     <td className="mono" style={{ fontSize: 11, color: "rgba(226,232,240,0.55)" }}>
-                      {r.detected_at || "—"}
+                      {fmtTs(r.detected_at)}
                     </td>
                     <td className="mono truncate" style={{ fontSize: 12, color: "rgba(226,232,240,0.75)" }}>
                       {r.file_path || "—"}

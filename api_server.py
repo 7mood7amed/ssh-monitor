@@ -32,6 +32,8 @@ from functools import lru_cache
 app = Flask(__name__)
 CORS(app)
 
+CORRELATED_ALERT_TITLES = {"Possible Web Shell Activation", "Possible Compromise After Brute Force"}
+
 # -----------------------------
 # DB config
 # -----------------------------
@@ -641,6 +643,15 @@ def get_metrics():
         )
         snort_critical_24h = cur.fetchone()[0] or 0
 
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM public.alerts
+            WHERE created_at >= NOW() - INTERVAL '24 hours';
+            """
+        )
+        alerts_last_24h = cur.fetchone()[0] or 0
+
         cur.close()
         conn.close()
 
@@ -650,6 +661,8 @@ def get_metrics():
                 "activeAgents": int(active_agents),
                 "anomalies": int(anomalies),
                 "passiveScans": int(passive_scans),
+                "alertsLast24h": int(alerts_last_24h),
+                "suspiciousWebRequests": int(web_anom),
                 "filesMonitored": int(files_monitored),
                 "fimChanges24h": int(fim_changes_24h),
                 "fimCritical24h": int(fim_critical_24h),
@@ -1912,6 +1925,40 @@ def list_alerts():
                 {**params, "limit": limit, "offset": offset},
             )
             rows = cur.fetchall()
+            for row in rows:
+                row["correlated"] = row["title"] in CORRELATED_ALERT_TITLES
+                row["involved_agents"] = []
+
+            correlation_ids = [row["id"] for row in rows if row["correlated"]]
+            if correlation_ids:
+                cur.execute(
+                    """
+                    SELECT allk.alert_id,
+                           CASE allk.log_type
+                             WHEN 'ssh_events'    THEN 'SSH'
+                             WHEN 'ftp_events'    THEN 'FTP'
+                             WHEN 'fim_events'    THEN 'FIM'
+                             WHEN 'nmap_findings' THEN 'NMAP'
+                             WHEN 'snort_alerts'  THEN 'SNORT'
+                             WHEN 'packet_events' THEN 'TSHARK'
+                             WHEN 'logs'          THEN l.agent_name
+                           END AS agent
+                    FROM alert_log_links allk
+                    LEFT JOIN logs l ON allk.log_type = 'logs' AND l.id = allk.log_id
+                    WHERE allk.alert_id = ANY(%(ids)s)
+                    """,
+                    {"ids": correlation_ids},
+                )
+                agents_by_alert: dict = {}
+                for link_row in cur.fetchall():
+                    agent = link_row["agent"]
+                    if not agent:
+                        continue
+                    agents_by_alert.setdefault(link_row["alert_id"], set()).add(agent)
+
+                for row in rows:
+                    if row["id"] in agents_by_alert:
+                        row["involved_agents"] = sorted(agents_by_alert[row["id"]])
 
         return jsonify({"page": page, "limit": limit, "total": total, "items": rows})
     finally:
@@ -1952,18 +1999,61 @@ def get_alert(alert_id: int):
             for row in links:
                 ids_by_type.setdefault(row["log_type"], []).append(row["log_id"])
 
+            alert["correlated"] = alert["title"] in CORRELATED_ALERT_TITLES
+
             linked_items = []
 
+            # Some collectors write already-local (Bahrain) wall-clock time
+            # instead of true UTC: auth.log/vsftpd.log parsing keeps whatever
+            # timezone offset the log line itself used (local), and the
+            # Nmap/TShark collectors use datetime.now() (also local). Others
+            # are genuinely UTC: Postgres NOW()/CURRENT_TIMESTAMP defaults, and
+            # Apache's log lines which extract_logs.py explicitly converts.
+            # Normalize everything onto the same true-UTC basis here, once, so
+            # every "time" this endpoint sends is consistently UTC -- the
+            # frontend can then apply one uniform UTC->Bahrain conversion
+            # everywhere instead of needing its own per-type special-casing.
+            _ALWAYS_LOCAL_EVIDENCE_TYPES = {"ssh_events", "ftp_events", "nmap_findings", "packet_events"}
+
+            def _normalize_evidence_time(log_type: str, time_val, source_val: str = ""):
+                if time_val is None:
+                    return time_val
+                if log_type in _ALWAYS_LOCAL_EVIDENCE_TYPES:
+                    return time_val - timedelta(hours=3)
+                if log_type == "logs" and "apache2" not in (source_val or ""):
+                    # auth.log/vsftpd.log/tshark_capture entries in the shared
+                    # `logs` table -- also local, unlike Apache's own entries.
+                    return time_val - timedelta(hours=3)
+                return time_val
+
+            _AGENT_LABEL_BY_LOG_TYPE = {
+                "ssh_events": "SSH",
+                "ftp_events": "FTP",
+                "fim_events": "FIM",
+                "nmap_findings": "NMAP",
+                "snort_alerts": "SNORT",
+                "packet_events": "TSHARK",
+            }
+            involved_agents = set()
+
             def add_item(log_type: str, time_val, source_val, message_val, extra=None):
+                normalized = _normalize_evidence_time(log_type, time_val, source_val)
                 item = {
                     "log_type": log_type,
-                    "time": _format_dt(time_val),
+                    "time": _format_dt(normalized),
                     "source": source_val or "",
                     "message": message_val or "",
+                    "_raw_time": normalized,
                 }
                 if extra:
                     item.update(extra)
                 linked_items.append(item)
+
+                agent = _AGENT_LABEL_BY_LOG_TYPE.get(log_type)
+                if log_type == "logs" and extra:
+                    agent = extra.get("agent_name") or agent
+                if agent:
+                    involved_agents.add(agent)
 
             # logs (Task 8 safety) + include severity
             if ids_by_type.get("logs"):
@@ -2109,6 +2199,18 @@ def get_alert(alert_id: int):
                          "priority": r.get("priority"), "protocol": r.get("protocol"),
                          "severity": r.get("severity") or "LOW"},
                     )
+
+            # Evidence is built in fixed per-type blocks above (all ssh_events,
+            # then all fim_events, etc.), each internally time-sorted but never
+            # interleaved with the others. Sort the full list into true
+            # chronological order now -- _raw_time was already normalized onto
+            # a consistent UTC basis by add_item()/_normalize_evidence_time(),
+            # so a direct comparison is correct here, no further adjustment needed.
+            linked_items.sort(key=lambda it: it.get("_raw_time") or datetime.min, reverse=True)
+            for it in linked_items:
+                it.pop("_raw_time", None)
+
+            alert["involved_agents"] = sorted(involved_agents)
 
             # Backwards-compatible "linked_logs" (logs table only)
             linked_logs = []
@@ -2473,6 +2575,21 @@ def severity_summary():
             FROM public.snort_alerts
             WHERE captured_at >= NOW() - (%s || ' hours')::interval
             GROUP BY severity;
+            """,
+            (hours_int,),
+        )
+        for sev, cnt in cur.fetchall():
+            bump(sev, cnt)
+
+        # -------------------------
+        # 6) Alerts (alert-level severity, additive to the raw event counts above)
+        # -------------------------
+        cur.execute(
+            """
+            SELECT LOWER(COALESCE(priority, 'low')) AS sev, COUNT(*)
+            FROM public.alerts
+            WHERE created_at >= NOW() - (%s || ' hours')::interval
+            GROUP BY sev;
             """,
             (hours_int,),
         )
