@@ -20,7 +20,7 @@ function Header({ lastUpdated }) {
       <div className="header-inner">
         <div className="header-title">
           <h1>🧠 Raven Security Dashboard</h1>
-          <p>Monitoring services: SSH / Web / FTP</p>
+          <p>Monitoring services: SSH / Web / FTP / Nmap / TShark / Snort / FIM</p>
           <p className="header-updated">🔄 Last Updated: {shownTime}</p>
         </div>
 
